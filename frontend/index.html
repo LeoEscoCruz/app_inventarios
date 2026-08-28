@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Demo v9 - Escáner Admin con Alta de Productos</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+</head>
+<body class="bg-gray-100 font-sans text-gray-800">
+
+    <nav class="bg-slate-900 text-white p-4 shadow-md sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto flex flex-wrap justify-between items-center gap-2">
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-boxes-stacked text-amber-500 text-xl"></i>
+                <span class="font-bold text-lg">La Flor de México</span>
+            </div>
+            <div class="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                <button onclick="cambiarRol('operativo')" id="btn-operativo" class="px-4 py-1.5 rounded-md text-sm font-bold transition bg-amber-500 text-slate-900">
+                    <i class="fa-solid fa-mobile-screen me-1"></i> Vista Móvil
+                </button>
+                <button onclick="cambiarRol('admin')" id="btn-admin" class="px-4 py-1.5 rounded-md text-sm font-medium transition text-gray-300 hover:text-white">
+                    <i class="fa-solid fa-chart-line me-1"></i> Dashboard Admin
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-6xl mx-auto p-4">
+
+        <!-- MÓDULO OPERATIVO -->
+        <section id="modulo-operativo" class="max-w-md mx-auto bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden my-2 space-y-4">
+            <div class="flex border-b bg-gray-50 text-xs font-bold text-gray-500">
+                <button onclick="cambiarSubTabEmp('escaner')" id="subtab-escaner" class="w-1/2 py-3 border-b-2 border-amber-500 text-amber-600 bg-white">
+                    <i class="fa-solid fa-camera me-1"></i> Escáner
+                </button>
+                <button onclick="cambiarSubTabEmp('lista')" id="subtab-lista" class="w-1/2 py-3 border-b-2 border-transparent hover:text-slate-800">
+                    <i class="fa-solid fa-list-check me-1"></i> Productos del Día
+                </button>
+            </div>
+
+            <!-- ESCÁNER EMPLEADO -->
+            <div id="pantalla-escaner" class="p-5 space-y-4">
+                <div class="space-y-2">
+                    <div id="reader-emp" class="w-full bg-slate-900 rounded-xl overflow-hidden border-2 border-amber-500 min-h-[200px]"></div>
+                    <div class="flex justify-between items-center text-xs text-gray-500 px-1">
+                        <span><i class="fa-solid fa-info-circle text-amber-500 me-1"></i> Apunta al código de barras</span>
+                        <button onclick="iniciarCamaraEmp()" class="text-amber-600 font-bold hover:underline">Reiniciar Cámara</button>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold text-gray-400 uppercase mb-1">Prueba Rápida sin Cámara:</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="simularEscaneo('7501055377206', 'Lechita Vainilla 180ml')" class="text-xs bg-gray-100 hover:bg-amber-100 p-2 rounded text-left truncate border">
+                            7501055377206 (Refri 1)
+                        </button>
+                        <button onclick="simularEscaneo('7501055305339', 'CC Light 600ml 12PK')" class="text-xs bg-gray-100 hover:bg-amber-100 p-2 rounded text-left truncate border">
+                            7501055305339 (Pasillo 1)
+                        </button>
+                    </div>
+                </div>
+
+                <form id="form-conteo-emp" onsubmit="registrarConteo(event)" class="space-y-3 border-t pt-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-600">Código de Barras</label>
+                        <input type="text" id="codigo-input" required placeholder="Escaneando..." class="w-full p-2 border rounded bg-gray-50 font-mono text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-600">Nombre del Producto</label>
+                        <input type="text" id="producto-input" readonly placeholder="--" class="w-full p-2 border rounded bg-gray-100 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-600">Cantidad Consecutiva (Acepta 0)</label>
+                        <input type="number" id="cantidad-input" min="0" required placeholder="Ingresa cantidad + Enter" class="w-full p-2 border rounded text-lg font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 outline-none">
+                    </div>
+                    <button type="submit" class="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 rounded-lg shadow flex items-center justify-center gap-2">
+                        <i class="fa-solid fa-paper-plane text-amber-400"></i> Registrar Físico
+                    </button>
+                </form>
+            </div>
+
+            <!-- LISTA DEL DÍA -->
+            <div id="pantalla-lista" class="hidden p-4 space-y-4">
+                <div class="flex justify-between items-center bg-slate-50 p-2.5 rounded-lg border">
+                    <span class="text-xs font-bold text-gray-600">Agrupar por:</span>
+                    <select id="select-orden-emp" onchange="renderizarListaEmpleado()" class="text-xs border rounded p-1 font-semibold bg-white outline-none">
+                        <option value="barrida">📍 Zonas Físicas (Pasillos/Refris)</option>
+                        <option value="departamento">📁 Departamento SICAR</option>
+                    </select>
+                </div>
+                <div id="contenedor-lista-diaria" class="space-y-4 max-h-96 overflow-y-auto pr-1"></div>
+            </div>
+        </section>
+
+        <!-- MÓDULO ADMINISTRATIVO -->
+        <section id="modulo-admin" class="hidden space-y-6">
+            <div class="flex border-b bg-white rounded-t-xl px-4 pt-2">
+                <button onclick="cambiarTabAdmin('en-vivo')" id="tab-btn-vivo" class="px-4 py-2 border-b-2 border-amber-500 font-bold text-amber-600 text-sm">
+                    <i class="fa-solid fa-tower-broadcast me-1"></i> Recepción En Vivo
+                </button>
+                <button onclick="cambiarTabAdmin('mapeo')" id="tab-btn-mapeo" class="px-4 py-2 border-b-2 border-transparent font-medium text-gray-500 hover:text-gray-700 text-sm">
+                    <i class="fa-solid fa-layer-group me-1"></i> Mapear Zonas y Pasillos
+                </button>
+            </div>
+
+            <!-- RECEPCIÓN EN VIVO -->
+            <div id="tab-vivo" class="space-y-4">
+                <div class="bg-white p-4 rounded-xl shadow-sm border flex flex-wrap justify-between items-center gap-2">
+                    <div>
+                        <h2 class="font-bold text-slate-900">Validación y Auditoría vs. SICAR</h2>
+                        <p class="text-xs text-gray-500">Mando central de capturas enviadas desde la tienda.</p>
+                    </div>
+
+                    <div class="flex bg-gray-100 p-1 rounded-lg border text-xs font-bold">
+                        <button onclick="filtrarTabla('todos')" id="filtro-todos" class="px-3 py-1 rounded-md bg-white shadow text-slate-800">Todos</button>
+                        <button onclick="filtrarTabla('pendiente')" id="filtro-pendiente" class="px-3 py-1 rounded-md text-gray-500 hover:text-slate-800">Pendientes</button>
+                        <button onclick="filtrarTabla('completado')" id="filtro-completado" class="px-3 py-1 rounded-md text-gray-500 hover:text-slate-800">Completados</button>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border overflow-x-auto">
+                    <table class="w-full text-left border-collapse min-w-[750px]">
+                        <thead>
+                            <tr class="bg-slate-50 border-b text-xs font-semibold text-gray-500 uppercase">
+                                <th class="p-3">Fecha y Hora</th>
+                                <th class="p-3">Código</th>
+                                <th class="p-3">Producto</th>
+                                <th class="p-3">Físico</th>
+                                <th class="p-3">Stock SICAR</th>
+                                <th class="p-3">Diferencia</th>
+                                <th class="p-3">Estado</th>
+                                <th class="p-3 text-center">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabla-capturas" class="divide-y text-sm"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- MAPEO DE ZONAS -->
+            <div id="tab-mapeo" class="hidden bg-white p-6 rounded-xl border shadow-sm space-y-6">
+                <div class="border-b pb-4 space-y-2">
+                    <h3 class="font-bold text-slate-900 text-sm"><i class="fa-solid fa-plus-circle text-amber-500 me-1"></i> 1. Crear Nueva Agrupación / Pasillo</h3>
+                    <form onsubmit="crearNuevaZona(event)" class="flex gap-2 max-w-md">
+                        <input type="text" id="input-nueva-zona" placeholder="Ej. Pasillo 2, Refri 1..." class="border p-2 rounded text-sm w-full outline-none focus:ring-2 focus:ring-amber-500">
+                        <button type="submit" class="bg-slate-900 text-white font-bold px-4 py-2 rounded text-sm hover:bg-slate-800 whitespace-nowrap">
+                            + Crear Zona
+                        </button>
+                    </form>
+                </div>
+
+                <div class="space-y-3">
+                    <h3 class="font-bold text-slate-900 text-sm"><i class="fa-solid fa-barcode text-amber-500 me-1"></i> 2. Asignar Productos por Escaneo a Zona Activa</h3>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <!-- CÁMARA ADMIN -->
+                        <div class="bg-slate-900 p-3 rounded-xl border border-slate-700 flex flex-col space-y-2">
+                            <span class="text-xs font-bold text-amber-400 flex items-center justify-between">
+                                <span><i class="fa-solid fa-camera me-1"></i> Cámara Escáner Admin</span>
+                                <button onclick="iniciarCamaraAdmin()" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-amber-400 px-2 py-0.5 rounded border border-slate-600">Encender</button>
+                            </span>
+                            <div id="reader-admin" class="w-full bg-slate-950 rounded-lg overflow-hidden min-h-[160px]"></div>
+                        </div>
+
+                        <!-- PANEL MAPEO Y DETECCIÓN -->
+                        <div class="bg-amber-50 p-4 rounded-xl border border-amber-200 flex flex-col justify-between space-y-3">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">Zona Selección Actual:</label>
+                                <select id="select-zona-activa" class="w-full border rounded p-2 text-xs font-bold bg-white outline-none text-slate-900"></select>
+                            </div>
+
+                            <form onsubmit="asignarProductoAZona(event)" class="space-y-2">
+                                <div>
+                                    <label class="block text-xs font-semibold text-gray-600">Código de Barras Escaneado:</label>
+                                    <input type="text" id="input-codigo-zona" oninput="procesarCodigoMapeo(this.value)" placeholder="Apunta la cámara o escribe..." class="border p-2 rounded text-xs w-full font-mono focus:ring-2 focus:ring-amber-500 outline-none bg-white">
+                                </div>
+
+                                <div>
+                                    <label class="block text-xs font-semibold text-gray-600">Nombre del Producto:</label>
+                                    <input type="text" id="input-nombre-zona" readonly placeholder="--" class="border p-2 rounded text-xs w-full font-bold bg-gray-100 text-slate-800">
+                                </div>
+
+                                <div id="alerta-no-registrado" class="hidden bg-amber-100 border border-amber-300 p-2 rounded-lg flex items-center justify-between">
+                                    <span class="text-[11px] text-amber-900 font-medium"><i class="fa-solid fa-triangle-exclamation text-amber-600 me-1"></i> Producto no catalogado</span>
+                                    <button type="button" onclick="abrirModalAlta()" class="bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] px-2 py-1 rounded shadow">
+                                        + Registrar Producto
+                                    </button>
+                                </div>
+
+                                <button type="submit" id="btn-asignar-zona" class="w-full bg-amber-500 font-bold text-slate-900 px-4 py-2 rounded text-xs hover:bg-amber-400 shadow">
+                                    <i class="fa-solid fa-link me-1"></i> Asignar a Zona
+                                </button>
+                            </form>
+
+                            <div class="flex gap-2 border-t border-amber-200 pt-2">
+                                <span class="text-[10px] text-gray-500 font-bold self-center">Prueba Rápida:</span>
+                                <button onclick="simularEscaneoMapeo('7501055377206')" class="text-[10px] bg-white hover:bg-amber-100 p-1 rounded border font-mono">7501055377206</button>
+                                <button onclick="simularEscaneoMapeo('9999999999999')" class="text-[10px] bg-red-50 text-red-700 hover:bg-red-100 p-1 rounded border font-mono">999 (No Existe)</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="space-y-3 border-t pt-4">
+                    <h3 class="font-bold text-slate-900 text-sm">Estructura Físicamente Configurada</h3>
+                    <div id="contenedor-zonas-admin" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- MODAL REGISTRO -->
+    <div id="modal-alta-producto" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden flex items-center justify-center p-4 z-50">
+        <div class="bg-white rounded-2xl shadow-2xl border border-gray-200 max-w-sm w-full p-5 space-y-4">
+            <div class="flex justify-between items-center border-b pb-2">
+                <h3 class="font-bold text-slate-900 text-sm"><i class="fa-solid fa-plus-circle text-amber-500 me-1"></i> Registrar Nuevo Producto</h3>
+                <button onclick="cerrarModalAlta()" class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+            
+            <form onsubmit="guardarNuevoProducto(event)" class="space-y-3">
+                <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Código de Barras</label>
+                    <input type="text" id="modal-codigo" readonly class="w-full p-2 border rounded bg-gray-100 font-mono text-xs font-bold text-slate-700">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Nombre / Descripción del Producto</label>
+                    <input type="text" id="modal-nombre" required placeholder="Ej. Galletas Chokis 90g" class="w-full p-2 border rounded text-xs outline-none focus:ring-2 focus:ring-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Departamento / Categoría</label>
+                    <select id="modal-depto" class="w-full p-2 border rounded text-xs bg-white outline-none">
+                        <option value="Abarrotes">Abarrotes</option>
+                        <option value="Lácteos">Lácteos</option>
+                        <option value="Refrescos">Refrescos</option>
+                        <option value="Snacks">Snacks</option>
+                        <option value="General">General</option>
+                    </select>
+                </div>
+                <div class="flex gap-2 pt-2">
+                    <button type="button" onclick="cerrarModalAlta()" class="w-1/2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-2 rounded-lg text-xs">Cancelar</button>
+                    <button type="submit" class="w-1/2 bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold py-2 rounded-lg text-xs shadow">Guardar Producto</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- TOAST NOTIFICATION -->
+    <div id="toast" class="fixed bottom-4 right-4 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-2xl hidden flex items-center gap-3 z-50">
+        <i class="fa-solid fa-circle-check text-emerald-400 text-lg"></i>
+        <span id="toast-msg" class="text-sm font-medium"></span>
+    </div>
+
+    <!-- CARGA DE SCRIPTS MODULARIZADOS -->
+    <script src="src/js/scanner.js"></script>
+    <script src="src/js/api.js"></script>
+    <script src="src/js/app.js"></script>
+</body>
+</html>
