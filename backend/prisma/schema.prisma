@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Rol {
+  ADMIN
+  EMPLEADO
+}
+
+enum EstadoCaptura {
+  PENDIENTE
+  COMPLETADO
+}
+
+enum EstadoSesion {
+  ACTIVA
+  CERRADA
+}
+
+model Usuario {
+  id        String   @id @default(uuid())
+  nombre    String
+  email     String   @unique
+  password  String
+  rol       Rol      @default(EMPLEADO)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  capturas  Captura[]
+}
+
+model Producto {
+  id        String   @id @default(uuid())
+  codigo    String   @unique
+  nombre    String
+  precio    Float    @default(0.0)
+  stock     Int      @default(0)
+  seccion   String?  // Pasillo 1, Refri 2, Mostrador, etc.
+  categoria String?  // Departamento de SICAR
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  capturas  Captura[]
+}
+
+model SesionInventario {
+  id          String       @id @default(uuid())
+  nombre      String       // Ej. "Inventario General Agosto 2026"
+  estado      EstadoSesion @default(ACTIVA)
+  fechaInicio DateTime     @default(now())
+  fechaFin    DateTime?
+  capturas    Captura[]
+}
+
+model Captura {
+  id                 String           @id @default(uuid())
+  productoId         String
+  producto           Producto         @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  usuarioId          String
+  usuario            Usuario          @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  sesionId           String
+  sesion             SesionInventario @relation(fields: [sesionId], references: [id], onDelete: Cascade)
+  
+  cantidadFisica     Int              // Conteo enviado por la empleada
+  stockSicar         Int?             // Cifra ingresada manualmente por el Admin
+  diferencia         Int?             // cantidadFisica - stockSicar
+  estado             EstadoCaptura    @default(PENDIENTE)
+  seccionCapturada   String?          // Zona específica donde se contó
+  
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+}

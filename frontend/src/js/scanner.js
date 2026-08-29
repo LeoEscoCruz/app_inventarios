@@ -17,10 +17,12 @@ function activarLectorEmp() {
     html5QrCodeEmp.start(
         { facingMode: "environment" },
         config,
-        (decodedText) => {
+        async (decodedText) => { // Agregamos 'async' aquí para poder consultar la base de datos
             document.getElementById('codigo-input').value = decodedText;
-            const prod = productosDia.find(p => p.codigo === decodedText);
-            document.getElementById('producto-input').value = prod ? prod.nombre : 'Producto Detectado';
+            
+            // Reemplazamos la búsqueda local por la consulta al servidor
+            await buscarProducto(decodedText);
+            
             document.getElementById('cantidad-input').focus();
             mostrarToast("Código leído: " + decodedText);
         },
@@ -62,5 +64,27 @@ function activarLectorAdmin() {
 function detenerCamaraAdmin() {
     if (html5QrCodeAdmin && html5QrCodeAdmin.isScanning) {
         html5QrCodeAdmin.stop().catch(err => console.error(err));
+    }
+} 
+
+// Nueva función independiente al final del archivo
+async function buscarProducto(codigoEscaneado) {
+    try {
+        // Usamos la API_BASE_URL que declaraste en tu clase api
+        const response = await fetch(`${API_BASE_URL}/productos/${codigoEscaneado}`);
+        
+        if (!response.ok) {
+            document.getElementById('producto-input').value = 'Producto no registrado';
+            return;
+        }
+
+        const producto = await response.json();
+        
+        // Actualiza el input con el nombre que viene de la base de datos
+        document.getElementById('producto-input').value = producto.nombre;
+        
+    } catch (error) {
+        console.error('Error al consultar el producto:', error);
+        document.getElementById('producto-input').value = 'Error de red';
     }
 }
