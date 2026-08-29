@@ -1,3 +1,5 @@
+const API_BASE_URL = 'https://app-inventarios.onrender.com/api';
+
 let zonas = [
     { id: 'z1', nombre: 'Pasillo #1 (Entrada)', productos: ['7501055305339'] },
     { id: 'z2', nombre: 'Refri 1 (Lácteos)', productos: ['7501055377206', '7501055377213'] }
