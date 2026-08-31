@@ -1,6 +1,8 @@
-// La app y la API se sirven desde el mismo servidor Express.
-// Si algún día separas el frontend, puedes definir window.APP_API_BASE_URL antes de cargar este archivo.
-const API_BASE_URL = window.APP_API_BASE_URL || '/api';
+const API_BASE_URL =
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1'
+        ? '/api'
+        : 'https://app-inventarios.onrender.com/api';
 
 async function apiRequest(ruta, opciones = {}) {
     const config = {
