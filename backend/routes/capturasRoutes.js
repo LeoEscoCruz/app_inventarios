@@ -77,16 +77,18 @@ router.post('/', async (req, res) => {
     }
 
     const { usuario, sesion } = await obtenerContextoInventario();
-    const stockSicar = Number.isInteger(producto.stock) ? producto.stock : 0;
 
+    // El stock importado desde el Excel de SICAR puede quedar obsoleto durante el día.
+    // Por eso una captura nueva llega al administrador SIN stock SICAR confirmado.
+    // El administrador consulta SICAR en ese momento y captura manualmente la cifra real.
     const captura = await prisma.captura.create({
       data: {
         productoId: producto.id,
         usuarioId: usuario.id,
         sesionId: sesion.id,
         cantidadFisica,
-        stockSicar,
-        diferencia: cantidadFisica - stockSicar,
+        stockSicar: null,
+        diferencia: null,
         estado: 'PENDIENTE',
         seccionCapturada: zona || producto.seccion || 'General'
       },

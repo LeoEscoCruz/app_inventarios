@@ -5,6 +5,7 @@ let productosDia = [];
 let capturas = [];
 let filtroActual = 'todos';
 let refrescandoCapturas = false;
+let codigoEmpleadoPreview = '';
 
 function cargarZonasLocales() {
     const zonasBase = [
@@ -209,6 +210,51 @@ async function buscarProducto(codigoEscaneado) {
     }
 }
 
+function limpiarPreviewProductoEmpleado() {
+    const inputProd = document.getElementById('producto-input');
+    const inputPrecio = document.getElementById('precio-input');
+    if (inputProd) inputProd.value = '--';
+    if (inputPrecio) inputPrecio.value = '$0.00';
+}
+
+function procesarCodigoEmpleadoEnTiempoReal(valor) {
+    const codigo = String(valor || '').trim();
+    const inputProd = document.getElementById('producto-input');
+    const inputPrecio = document.getElementById('precio-input');
+
+    codigoEmpleadoPreview = codigo;
+
+    if (!codigo) {
+        limpiarPreviewProductoEmpleado();
+        return;
+    }
+
+    // Todos los productos ya se cargan al abrir la app, así que esta búsqueda es local
+    // y no genera una petición a Render por cada tecla.
+    const exacto = productosDia.find(p => p.codigo === codigo);
+    if (exacto) {
+        if (inputProd) inputProd.value = exacto.nombre;
+        if (inputPrecio) inputPrecio.value = `$${exacto.precio.toFixed(2)}`;
+        return;
+    }
+
+    const coincidencias = productosDia
+        .filter(p => p.codigo.startsWith(codigo))
+        .slice(0, 6);
+
+    if (coincidencias.length === 1) {
+        const unico = coincidencias[0];
+        if (inputProd) inputProd.value = unico.nombre;
+        if (inputPrecio) inputPrecio.value = `$${unico.precio.toFixed(2)}`;
+    } else if (coincidencias.length > 1) {
+        if (inputProd) inputProd.value = `${coincidencias.length}${coincidencias.length === 6 ? '+' : ''} coincidencias por código`;
+        if (inputPrecio) inputPrecio.value = '$0.00';
+    } else {
+        if (inputProd) inputProd.value = 'Sin coincidencias';
+        if (inputPrecio) inputPrecio.value = '$0.00';
+    }
+}
+
 async function procesarEscaneoEmpleado(codigo) {
     const codigoLimpio = String(codigo || '').trim();
     const inputCodigo = document.getElementById('codigo-input');
@@ -217,6 +263,7 @@ async function procesarEscaneoEmpleado(codigo) {
     const inputCant = document.getElementById('cantidad-input');
 
     if (inputCodigo) inputCodigo.value = codigoLimpio;
+    codigoEmpleadoPreview = codigoLimpio;
     if (inputProd) inputProd.value = 'Buscando...';
     if (inputPrecio) inputPrecio.value = '$0.00';
 
@@ -273,8 +320,9 @@ async function registrarConteo(event) {
 
         if (codigoInput) codigoInput.value = '';
         if (cantidadInput) cantidadInput.value = '';
-        if (productoInput) productoInput.value = '';
-        if (precioInput) precioInput.value = '';
+        if (productoInput) productoInput.value = '--';
+        if (precioInput) precioInput.value = '$0.00';
+        codigoEmpleadoPreview = '';
 
         renderizarListaEmpleado();
         renderizarTabla();
@@ -306,18 +354,62 @@ function renderizarListaEmpleado() {
         grupos.get(grupo).push(producto);
     });
 
+    const ultimaCapturaPorCodigo = new Map();
+    capturas.forEach(captura => {
+        if (!captura.codigo || !captura.fechahora) return;
+        const fecha = new Date(captura.fechahora).getTime();
+        if (!Number.isFinite(fecha)) return;
+        const actual = ultimaCapturaPorCodigo.get(captura.codigo) || 0;
+        if (fecha > actual) ultimaCapturaPorCodigo.set(captura.codigo, fecha);
+    });
+
+    const infoGrupo = nombre => {
+        const productos = grupos.get(nombre) || [];
+        const completado = productos.length > 0 && productos.every(p => p.contado);
+        const fechaFinalizacion = completado
+            ? Math.max(...productos.map(p => ultimaCapturaPorCodigo.get(p.codigo) || 0))
+            : 0;
+        return { productos, completado, fechaFinalizacion };
+    };
+
     const nombresGrupos = [...grupos.keys()].sort((a, b) => {
-        if (a === 'Sin zona asignada') return 1;
-        if (b === 'Sin zona asignada') return -1;
+        // La agrupación grande de productos sin zona siempre queda hasta el final.
+        if (orden === 'barrida') {
+            if (a === 'Sin zona asignada') return 1;
+            if (b === 'Sin zona asignada') return -1;
+
+            const infoA = infoGrupo(a);
+            const infoB = infoGrupo(b);
+
+            // Zonas pendientes primero; zonas 100% contadas se apilan abajo,
+            // inmediatamente antes de "Sin zona asignada".
+            if (infoA.completado !== infoB.completado) {
+                return infoA.completado ? 1 : -1;
+            }
+
+            // Entre zonas terminadas conservamos el orden en que se fueron completando:
+            // la última terminada queda más cerca de "Sin zona asignada".
+            if (infoA.completado && infoB.completado && infoA.fechaFinalizacion !== infoB.fechaFinalizacion) {
+                return infoA.fechaFinalizacion - infoB.fechaFinalizacion;
+            }
+        }
+
         return a.localeCompare(b, 'es');
     });
 
     const fragment = document.createDocumentFragment();
     nombresGrupos.forEach(nombreGrupo => {
-        const productos = grupos.get(nombreGrupo).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+        const info = infoGrupo(nombreGrupo);
+        const productos = info.productos.sort((a, b) => {
+            if (a.contado !== b.contado) return a.contado ? 1 : -1;
+            return a.nombre.localeCompare(b.nombre, 'es');
+        });
         const sec = document.createElement('div');
         const icono = orden === 'departamento' ? 'fa-folder' : 'fa-location-dot';
-        sec.innerHTML = `<h4 class="font-bold text-xs uppercase bg-slate-100 text-slate-700 px-2 py-1 rounded mb-2"><i class="fa-solid ${icono} me-1"></i>${escaparHtml(nombreGrupo)} <span class="text-[10px] text-gray-400">(${productos.length})</span></h4>`;
+        const etiquetaCompletada = orden === 'barrida' && nombreGrupo !== 'Sin zona asignada' && info.completado
+            ? '<span class="ms-2 text-[9px] text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-full">COMPLETA</span>'
+            : '';
+        sec.innerHTML = `<h4 class="font-bold text-xs uppercase bg-slate-100 text-slate-700 px-2 py-1 rounded mb-2"><i class="fa-solid ${icono} me-1"></i>${escaparHtml(nombreGrupo)} <span class="text-[10px] text-gray-400">(${productos.length})</span>${etiquetaCompletada}</h4>`;
 
         const sublist = document.createElement('div');
         sublist.className = 'space-y-1.5 pl-1 mb-3';
@@ -359,6 +451,37 @@ function formatearFecha(fecha) {
     });
 }
 
+function formatearDiferencia(valor) {
+    if (valor === null || valor === undefined || Number.isNaN(Number(valor))) return '--';
+    const numero = Number(valor);
+    return numero > 0 ? `+${numero}` : String(numero);
+}
+
+function actualizarDiferenciaVista(id) {
+    const captura = capturas.find(c => c.id === id);
+    const input = document.getElementById(`sicar-${id}`);
+    const celda = document.getElementById(`diferencia-${id}`);
+    if (!captura || !input || !celda) return;
+
+    const valor = String(input.value ?? '').trim();
+    if (valor === '') {
+        celda.textContent = '--';
+        celda.className = 'p-3 font-bold text-gray-400';
+        return;
+    }
+
+    const stockSicar = Number(valor);
+    if (!Number.isInteger(stockSicar)) {
+        celda.textContent = '--';
+        celda.className = 'p-3 font-bold text-gray-400';
+        return;
+    }
+
+    const diferencia = captura.fisico - stockSicar;
+    celda.textContent = formatearDiferencia(diferencia);
+    celda.className = `p-3 font-bold ${diferencia === 0 ? 'text-emerald-600' : 'text-red-600'}`;
+}
+
 function renderizarTabla() {
     const tbody = document.getElementById('tabla-capturas');
     if (!tbody) return;
@@ -381,9 +504,18 @@ function renderizarTabla() {
                 <td class="p-3 font-semibold">${escaparHtml(c.producto)}</td>
                 <td class="p-3 font-bold text-slate-900">${c.fisico}</td>
                 <td class="p-3">
-                    <input id="sicar-${c.id}" type="number" value="${c.sicar ?? ''}" class="w-20 border rounded p-1.5 text-sm font-bold bg-white focus:ring-2 focus:ring-amber-500 outline-none" />
+                    <input
+                        id="sicar-${c.id}"
+                        type="number"
+                        step="1"
+                        value="${c.sicar ?? ''}"
+                        placeholder="Capturar"
+                        oninput="actualizarDiferenciaVista('${c.id}')"
+                        class="w-24 border rounded p-1.5 text-sm font-bold bg-white focus:ring-2 focus:ring-amber-500 outline-none"
+                        title="Consulta SICAR ahora y escribe aquí la existencia vigente"
+                    />
                 </td>
-                <td class="p-3 font-bold ${diffClase}">${diff === null ? '--' : (diff > 0 ? `+${diff}` : diff)}</td>
+                <td id="diferencia-${c.id}" class="p-3 font-bold ${diffClase}">${formatearDiferencia(diff)}</td>
                 <td class="p-3">
                     <span class="px-2 py-1 rounded-full text-[10px] font-bold uppercase ${estadoCompleto ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">
                         ${estadoCompleto ? 'Completado' : 'Pendiente'}
@@ -413,10 +545,17 @@ function filtrarTabla(filtro) {
 
 async function guardarValidacionCaptura(id) {
     const input = document.getElementById(`sicar-${id}`);
-    const stockSicar = Number(input?.value);
+    const valorSicar = String(input?.value ?? '').trim();
 
+    if (valorSicar === '') {
+        mostrarToast('Consulta SICAR e ingresa la existencia actual antes de validar', 'error');
+        input?.focus();
+        return;
+    }
+
+    const stockSicar = Number(valorSicar);
     if (!Number.isInteger(stockSicar)) {
-        mostrarToast('Ingresa un stock SICAR válido', 'error');
+        mostrarToast('Ingresa una existencia SICAR válida', 'error');
         input?.focus();
         return;
     }

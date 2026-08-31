@@ -65,7 +65,7 @@
                 <form id="form-conteo-emp" onsubmit="registrarConteo(event)" class="space-y-3 border-t pt-3">
                     <div>
                         <label class="block text-xs font-semibold text-gray-600">Código de Barras</label>
-                        <input type="text" id="codigo-input" required placeholder="Escaneando..." class="w-full p-2 border rounded bg-gray-50 font-mono text-sm">
+                        <input type="text" id="codigo-input" required autocomplete="off" inputmode="numeric" oninput="procesarCodigoEmpleadoEnTiempoReal(this.value)" placeholder="Escanea o escribe el código..." class="w-full p-2 border rounded bg-gray-50 font-mono text-sm">
                     </div>
                     
                     <!-- CAMPOS MOSTRADOS AL ESCANEAR EL PRODUCTO -->
@@ -119,7 +119,7 @@
                 <div class="bg-white p-4 rounded-xl shadow-sm border flex flex-wrap justify-between items-center gap-2">
                     <div>
                         <h2 class="font-bold text-slate-900">Validación y Auditoría vs. SICAR</h2>
-                        <p class="text-xs text-gray-500">Mando central de capturas enviadas desde la tienda.</p>
+                        <p class="text-xs text-gray-500">Mando central de capturas enviadas desde la tienda. Consulta SICAR y captura aquí la existencia vigente antes de validar.</p>
                     </div>
 
                     <div class="flex bg-gray-100 p-1 rounded-lg border text-xs font-bold">
@@ -137,7 +137,7 @@
                                 <th class="p-3">Código</th>
                                 <th class="p-3">Producto</th>
                                 <th class="p-3">Físico</th>
-                                <th class="p-3">Stock SICAR</th>
+                                <th class="p-3">SICAR actual</th>
                                 <th class="p-3">Diferencia</th>
                                 <th class="p-3">Estado</th>
                                 <th class="p-3 text-center">Acciones</th>

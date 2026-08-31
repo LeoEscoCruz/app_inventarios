@@ -1,8 +1,10 @@
-const API_BASE_URL =
-    window.location.hostname === 'localhost' ||
-    window.location.hostname === '127.0.0.1'
+// En local la API vive en el mismo Express; en producción el frontend está en Vercel y la API en Render.
+// window.APP_API_BASE_URL permite sobrescribir la URL sin volver a editar este archivo.
+const API_BASE_URL = window.APP_API_BASE_URL || (
+    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
         ? '/api'
-        : 'https://app-inventarios.onrender.com/api';
+        : 'https://app-inventarios.onrender.com/api'
+);
 
 async function apiRequest(ruta, opciones = {}) {
     const config = {
