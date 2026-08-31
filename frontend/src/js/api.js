@@ -1,19 +1,69 @@
-const API_BASE_URL = 'https://app-inventarios.onrender.com/api';
+// La app y la API se sirven desde el mismo servidor Express.
+// Si algún día separas el frontend, puedes definir window.APP_API_BASE_URL antes de cargar este archivo.
+const API_BASE_URL = window.APP_API_BASE_URL || '/api';
 
-let zonas = [
-    { id: 'z1', nombre: 'Pasillo #1 (Entrada)', productos: ['7501055305339'] },
-    { id: 'z2', nombre: 'Refri 1 (Lácteos)', productos: ['7501055377206', '7501055377213'] }
-];
+async function apiRequest(ruta, opciones = {}) {
+    const config = {
+        ...opciones,
+        headers: {
+            'Content-Type': 'application/json',
+            ...(opciones.headers || {})
+        }
+    };
 
-let productosDia = [
-    { codigo: '7501055377206', nombre: 'Lechita Vainilla 180ml', depto: 'Lácteos', contado: false },
-    { codigo: '7501055377213', nombre: 'Lechita Capuccino 180ml', depto: 'Lácteos', contado: false },
-    { codigo: '7501055305339', nombre: 'CC Light 600ml 12PK', depto: 'Refrescos', contado: true }
-];
+    const response = await fetch(`${API_BASE_URL}${ruta}`, config);
+    let body = null;
 
-let capturas = [
-    { id: 1, fechahora: '27/08/2026 15:10', codigo: '7501055305339', producto: 'CC Light 600ml 12PK', fisico: 12, sicar: 5, diferencia: 7, estado: 'completado' },
-    { id: 2, fechahora: '27/08/2026 15:25', codigo: '7501055377206', producto: 'Lechita Vainilla 180ml', fisico: 0, sicar: null, diferencia: null, estado: 'pendiente' }
-];
+    try {
+        body = await response.json();
+    } catch (_) {
+        body = null;
+    }
 
-let filtroActual = 'todos';
+    if (!response.ok) {
+        const mensaje = body?.message || body?.error || `Error HTTP ${response.status}`;
+        throw new Error(mensaje);
+    }
+
+    return body;
+}
+
+function apiObtenerProductos() {
+    return apiRequest('/productos');
+}
+
+function apiBuscarProducto(codigo) {
+    return apiRequest(`/productos/${encodeURIComponent(String(codigo).trim())}`);
+}
+
+function apiCrearProducto(datos) {
+    return apiRequest('/productos', {
+        method: 'POST',
+        body: JSON.stringify(datos)
+    });
+}
+
+function apiActualizarProducto(codigo, datos) {
+    return apiRequest(`/productos/${encodeURIComponent(String(codigo).trim())}`, {
+        method: 'PATCH',
+        body: JSON.stringify(datos)
+    });
+}
+
+function apiObtenerCapturas() {
+    return apiRequest('/capturas');
+}
+
+function apiRegistrarCaptura(datos) {
+    return apiRequest('/capturas', {
+        method: 'POST',
+        body: JSON.stringify(datos)
+    });
+}
+
+function apiActualizarCaptura(id, datos) {
+    return apiRequest(`/capturas/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: JSON.stringify(datos)
+    });
+}

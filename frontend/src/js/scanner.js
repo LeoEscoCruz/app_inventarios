@@ -1,90 +1,87 @@
 let html5QrCodeEmp = null;
 let html5QrCodeAdmin = null;
+let ultimoCodigoEmp = '';
+let ultimoCodigoAdmin = '';
+let ultimaLecturaEmp = 0;
+let ultimaLecturaAdmin = 0;
 
-function iniciarCamaraEmp() {
-    detenerCamaraAdmin();
-    if (html5QrCodeEmp && html5QrCodeEmp.isScanning) {
-        html5QrCodeEmp.stop().then(() => activarLectorEmp()).catch(err => console.error(err));
-    } else {
-        activarLectorEmp();
+function lecturaRepetida(codigo, tipo) {
+    const ahora = Date.now();
+    if (tipo === 'emp') {
+        const repetida = codigo === ultimoCodigoEmp && ahora - ultimaLecturaEmp < 1800;
+        ultimoCodigoEmp = codigo;
+        ultimaLecturaEmp = ahora;
+        return repetida;
     }
+
+    const repetida = codigo === ultimoCodigoAdmin && ahora - ultimaLecturaAdmin < 1800;
+    ultimoCodigoAdmin = codigo;
+    ultimaLecturaAdmin = ahora;
+    return repetida;
+}
+
+async function iniciarCamaraEmp() {
+    await detenerCamaraAdmin();
+    if (typeof Html5Qrcode === 'undefined' || !document.getElementById('reader-emp')) return;
+    await detenerCamaraEmp();
+    activarLectorEmp();
 }
 
 function activarLectorEmp() {
-    html5QrCodeEmp = new Html5Qrcode("reader-emp");
+    if (html5QrCodeEmp?.isScanning) return;
+
+    if (!html5QrCodeEmp) html5QrCodeEmp = new Html5Qrcode('reader-emp');
     const config = { fps: 10, qrbox: { width: 250, height: 120 } };
 
     html5QrCodeEmp.start(
-        { facingMode: "environment" },
+        { facingMode: 'environment' },
         config,
-        async (decodedText) => { // Agregamos 'async' aquí para poder consultar la base de datos
-            document.getElementById('codigo-input').value = decodedText;
-            
-            // Reemplazamos la búsqueda local por la consulta al servidor
-            await buscarProducto(decodedText);
-            
-            document.getElementById('cantidad-input').focus();
-            mostrarToast("Código leído: " + decodedText);
+        async (decodedText) => {
+            const codigo = String(decodedText).trim();
+            if (!codigo || lecturaRepetida(codigo, 'emp')) return;
+            if (typeof procesarEscaneoEmpleado === 'function') {
+                await procesarEscaneoEmpleado(codigo);
+            }
         },
-        (err) => {}
-    ).catch(err => console.warn("Camara emp error:", err));
+        () => {}
+    ).catch(err => console.warn('Cámara empleado no disponible:', err));
 }
 
-function detenerCamaraEmp() {
-    if (html5QrCodeEmp && html5QrCodeEmp.isScanning) {
-        html5QrCodeEmp.stop().catch(err => console.error(err));
+async function detenerCamaraEmp() {
+    if (html5QrCodeEmp?.isScanning) {
+        try { await html5QrCodeEmp.stop(); } catch (err) { console.warn(err); }
     }
 }
 
-function iniciarCamaraAdmin() {
-    detenerCamaraEmp();
-    if (html5QrCodeAdmin && html5QrCodeAdmin.isScanning) {
-        html5QrCodeAdmin.stop().then(() => activarLectorAdmin()).catch(err => console.error(err));
-    } else {
-        activarLectorAdmin();
-    }
+async function iniciarCamaraAdmin() {
+    await detenerCamaraEmp();
+    if (typeof Html5Qrcode === 'undefined' || !document.getElementById('reader-admin')) return;
+    await detenerCamaraAdmin();
+    activarLectorAdmin();
 }
 
 function activarLectorAdmin() {
-    html5QrCodeAdmin = new Html5Qrcode("reader-admin");
+    if (html5QrCodeAdmin?.isScanning) return;
+
+    if (!html5QrCodeAdmin) html5QrCodeAdmin = new Html5Qrcode('reader-admin');
     const config = { fps: 10, qrbox: { width: 220, height: 100 } };
 
     html5QrCodeAdmin.start(
-        { facingMode: "environment" },
+        { facingMode: 'environment' },
         config,
-        (decodedText) => {
-            document.getElementById('input-codigo-zona').value = decodedText;
-            procesarCodigoMapeo(decodedText);
-            mostrarToast("Código escaneado: " + decodedText);
+        async (decodedText) => {
+            const codigo = String(decodedText).trim();
+            if (!codigo || lecturaRepetida(codigo, 'admin')) return;
+            if (typeof procesarEscaneoMapeo === 'function') {
+                await procesarEscaneoMapeo(codigo);
+            }
         },
-        (err) => {}
-    ).catch(err => console.warn("Camara admin error:", err));
+        () => {}
+    ).catch(err => console.warn('Cámara administrador no disponible:', err));
 }
 
-function detenerCamaraAdmin() {
-    if (html5QrCodeAdmin && html5QrCodeAdmin.isScanning) {
-        html5QrCodeAdmin.stop().catch(err => console.error(err));
-    }
-} 
-
-// Nueva función independiente al final del archivo
-async function buscarProducto(codigoEscaneado) {
-    try {
-        // Usamos la API_BASE_URL que declaraste en tu clase api
-        const response = await fetch(`${API_BASE_URL}/productos/${codigoEscaneado}`);
-        
-        if (!response.ok) {
-            document.getElementById('producto-input').value = 'Producto no registrado';
-            return;
-        }
-
-        const producto = await response.json();
-        
-        // Actualiza el input con el nombre que viene de la base de datos
-        document.getElementById('producto-input').value = producto.nombre;
-        
-    } catch (error) {
-        console.error('Error al consultar el producto:', error);
-        document.getElementById('producto-input').value = 'Error de red';
+async function detenerCamaraAdmin() {
+    if (html5QrCodeAdmin?.isScanning) {
+        try { await html5QrCodeAdmin.stop(); } catch (err) { console.warn(err); }
     }
 }

@@ -27,6 +27,4 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Servidor ejecutándose en http://localhost:${PORT}`);
-    console.log(`📱 Acceso en Red Local: http://localhost:${PORT}`);
-    
 });
