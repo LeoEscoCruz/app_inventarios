@@ -6,6 +6,15 @@ let capturas = [];
 let filtroActual = 'todos';
 let refrescandoCapturas = false;
 let codigoEmpleadoPreview = '';
+let appEventosInicializados = false;
+let intervaloRecepcion = null;
+let sesionInventarioActiva = null;
+let eventosInventarioAbortController = null;
+let eventosInventarioReconectarTimer = null;
+let sincronizacionTiempoRealTimer = null;
+const sincronizacionTiempoRealPendiente = { capturas: false, productos: false, sesion: false };
+// Conserva lo que el administrador está escribiendo en SICAR aunque llegue un refresco en vivo.
+const borradoresSicar = new Map();
 
 function cargarZonasLocales() {
     const zonasBase = [
@@ -50,7 +59,9 @@ function normalizarCaptura(c) {
         sicar: c.stockSicar ?? c.sicar ?? null,
         diferencia: c.diferencia ?? null,
         estado: String(c.estado || 'PENDIENTE').toLowerCase(),
-        zona: c.seccionCapturada || c.zona || c.producto?.seccion || 'General'
+        zona: c.seccionCapturada || c.zona || c.producto?.seccion || 'General',
+        usuarioNombre: c.usuario?.nombre || c.usuarioNombre || c.usuario?.username || 'Sin identificar',
+        usuarioUsername: c.usuario?.username || c.usuarioUsername || ''
     };
 }
 
@@ -88,14 +99,31 @@ async function cargarProductosDesdeBD() {
     }
 }
 
+function hayEdicionSicarActiva() {
+    const activo = document.activeElement;
+    return Boolean(activo && activo.tagName === 'INPUT' && String(activo.id || '').startsWith('sicar-'));
+}
+
 async function cargarCapturasDesdeBD({ silencioso = false } = {}) {
     if (refrescandoCapturas) return;
     refrescandoCapturas = true;
     try {
-        const respuesta = await apiObtenerCapturas();
+        const respuesta = usuarioActualEsAdmin()
+            ? await apiObtenerCapturas()
+            : await apiObtenerProgresoInventario();
         capturas = Array.isArray(respuesta?.data) ? respuesta.data.map(normalizarCaptura) : [];
+        if (respuesta?.sesion) {
+            sesionInventarioActiva = respuesta.sesion;
+            actualizarIndicadoresSesion();
+        }
         sincronizarProductosContados();
-        renderizarTabla();
+        if (usuarioActualEsAdmin()) {
+            // Si el administrador está escribiendo una existencia de SICAR, agregamos solo
+            // las filas nuevas sin reconstruir su input. Así las capturas aparecen en vivo
+            // sin quitarle el foco ni borrar lo que está escribiendo.
+            if (hayEdicionSicarActiva()) insertarCapturasNuevasEnTabla();
+            else renderizarTabla();
+        }
         renderizarListaEmpleado();
     } catch (error) {
         console.error('Error al cargar capturas:', error);
@@ -105,15 +133,86 @@ async function cargarCapturasDesdeBD({ silencioso = false } = {}) {
     }
 }
 
+async function cargarSesionInventarioActiva() {
+    try {
+        const respuesta = await apiObtenerSesionActiva();
+        sesionInventarioActiva = respuesta?.data || null;
+        actualizarIndicadoresSesion();
+        return sesionInventarioActiva;
+    } catch (error) {
+        console.error('Error al cargar el inventario activo:', error);
+        return null;
+    }
+}
+
+function actualizarIndicadoresSesion() {
+    const nombre = sesionInventarioActiva?.nombre || 'Inventario activo';
+    const fecha = sesionInventarioActiva?.fechaInicio
+        ? formatearFecha(sesionInventarioActiva.fechaInicio)
+        : '--';
+
+    const labelOperativo = document.getElementById('sesion-operativa-label');
+    const labelAdmin = document.getElementById('sesion-admin-label');
+    const fechaAdmin = document.getElementById('sesion-admin-fecha');
+
+    if (labelOperativo) labelOperativo.textContent = nombre;
+    if (labelAdmin) labelAdmin.textContent = nombre;
+    if (fechaAdmin) fechaAdmin.textContent = `Iniciado: ${fecha}`;
+}
+
+async function iniciarNuevoInventario() {
+    if (!usuarioActualEsAdmin()) {
+        mostrarToast('Solo un administrador puede iniciar un inventario', 'error');
+        return;
+    }
+
+    const confirmado = window.confirm(
+        'Se cerrará el inventario actual y comenzará uno nuevo.\n\n' +
+        'Las capturas anteriores se conservarán para el histórico y todos los productos volverán a aparecer como pendientes.\n\n' +
+        '¿Deseas continuar?'
+    );
+    if (!confirmado) return;
+
+    try {
+        const respuesta = await apiIniciarNuevaSesion();
+        sesionInventarioActiva = respuesta?.data || null;
+        capturas = [];
+        borradoresSicar.clear();
+        productosDia.forEach(producto => { producto.contado = false; });
+        filtroActual = 'todos';
+        actualizarIndicadoresSesion();
+        await cargarCapturasDesdeBD({ silencioso: true });
+        renderizarListaEmpleado();
+        renderizarTabla();
+        mostrarToast('Nuevo inventario iniciado. Todos los productos están pendientes.');
+    } catch (error) {
+        console.error(error);
+        mostrarToast(`No se pudo iniciar el nuevo inventario: ${error.message}`, 'error');
+    }
+}
+
 async function cargarDatosIniciales() {
-    await Promise.all([cargarProductosDesdeBD(), cargarCapturasDesdeBD({ silencioso: true })]);
+    await Promise.all([
+        cargarProductosDesdeBD(),
+        cargarSesionInventarioActiva(),
+        cargarCapturasDesdeBD({ silencioso: true })
+    ]);
     sincronizarProductosContados();
     renderizarListaEmpleado();
-    renderizarMapeoAdmin();
-    renderizarTabla();
+    if (usuarioActualEsAdmin()) {
+        renderizarMapeoAdmin();
+        renderizarTabla();
+    }
 }
 
 function cambiarRol(rol) {
+    const usuario = obtenerUsuarioActual();
+    if (!usuario) return;
+    if (rol === 'admin' && usuario.rol !== 'ADMIN') {
+        mostrarToast('No tienes permisos para abrir el Dashboard administrativo', 'error');
+        rol = 'operativo';
+    }
+
     const modOp = document.getElementById('modulo-operativo');
     const modAdmin = document.getElementById('modulo-admin');
     const btnOp = document.getElementById('btn-operativo');
@@ -307,6 +406,11 @@ async function registrarConteo(event) {
         return;
     }
 
+    if (producto.contado) {
+        mostrarToast('Este producto ya fue contado en el inventario activo', 'error');
+        return;
+    }
+
     try {
         const respuesta = await apiRegistrarCaptura({
             codigo,
@@ -330,6 +434,11 @@ async function registrarConteo(event) {
         codigoInput?.focus();
     } catch (error) {
         console.error(error);
+        if (error?.code === 'PRODUCT_ALREADY_COUNTED') {
+            await cargarCapturasDesdeBD({ silencioso: true });
+            mostrarToast('Otro usuario ya contó este producto en el inventario activo', 'error');
+            return;
+        }
         mostrarToast(`No se pudo registrar el conteo: ${error.message}`, 'error');
     }
 }
@@ -464,6 +573,7 @@ function actualizarDiferenciaVista(id) {
     if (!captura || !input || !celda) return;
 
     const valor = String(input.value ?? '').trim();
+    borradoresSicar.set(id, valor);
     if (valor === '') {
         celda.textContent = '--';
         celda.className = 'p-3 font-bold text-gray-400';
@@ -482,53 +592,95 @@ function actualizarDiferenciaVista(id) {
     celda.className = `p-3 font-bold ${diferencia === 0 ? 'text-emerald-600' : 'text-red-600'}`;
 }
 
+function htmlFilaCaptura(c) {
+    const tieneBorrador = borradoresSicar.has(c.id);
+    const valorSicarVista = tieneBorrador ? borradoresSicar.get(c.id) : (c.sicar ?? '');
+    const numeroBorrador = String(valorSicarVista).trim() === '' ? null : Number(valorSicarVista);
+    const diff = numeroBorrador !== null && Number.isInteger(numeroBorrador)
+        ? c.fisico - numeroBorrador
+        : c.diferencia;
+    const diffClase = diff === null ? 'text-gray-400' : diff === 0 ? 'text-emerald-600' : 'text-red-600';
+    const estadoCompleto = c.estado === 'completado';
+    const usuarioNombre = c.usuarioNombre || c.usuarioUsername || 'Sin identificar';
+    const usuarioUsername = c.usuarioUsername && c.usuarioUsername !== usuarioNombre
+        ? `@${c.usuarioUsername}`
+        : '';
+
+    return `
+        <tr data-captura-id="${escaparHtml(c.id)}" class="hover:bg-slate-50">
+            <td class="p-3 text-xs whitespace-nowrap">${formatearFecha(c.fechahora)}</td>
+            <td class="p-3 font-mono text-xs">${escaparHtml(c.codigo)}</td>
+            <td class="p-3 font-semibold">${escaparHtml(c.producto)}</td>
+            <td class="p-3 whitespace-nowrap">
+                <div class="font-semibold text-slate-800">${escaparHtml(usuarioNombre)}</div>
+                ${usuarioUsername ? `<div class="text-[10px] text-gray-400">${escaparHtml(usuarioUsername)}</div>` : ''}
+            </td>
+            <td class="p-3 font-bold text-slate-900">${c.fisico}</td>
+            <td class="p-3">
+                <input
+                    id="sicar-${c.id}"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value="${escaparHtml(String(valorSicarVista))}"
+                    placeholder="Capturar"
+                    oninput="actualizarDiferenciaVista('${c.id}')"
+                    class="w-24 border rounded p-1.5 text-sm font-bold bg-white focus:ring-2 focus:ring-amber-500 outline-none"
+                    title="Consulta SICAR ahora y escribe aquí la existencia vigente"
+                />
+            </td>
+            <td id="diferencia-${c.id}" class="p-3 font-bold ${diffClase}">${formatearDiferencia(diff)}</td>
+            <td class="p-3">
+                <span class="px-2 py-1 rounded-full text-[10px] font-bold uppercase ${estadoCompleto ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">
+                    ${estadoCompleto ? 'Completado' : 'Pendiente'}
+                </span>
+            </td>
+            <td class="p-3 text-center">
+                <button onclick="guardarValidacionCaptura('${c.id}')" class="bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded text-xs font-bold shadow">
+                    <i class="fa-solid fa-check me-1 text-amber-400"></i>${estadoCompleto ? 'Actualizar' : 'Validar'}
+                </button>
+            </td>
+        </tr>
+    `;
+}
+
+function capturasVisiblesEnFiltro() {
+    return capturas.filter(c => filtroActual === 'todos' || c.estado === filtroActual);
+}
+
 function renderizarTabla() {
     const tbody = document.getElementById('tabla-capturas');
     if (!tbody) return;
 
-    const visibles = capturas.filter(c => filtroActual === 'todos' || c.estado === filtroActual);
-
+    const visibles = capturasVisiblesEnFiltro();
     if (!visibles.length) {
-        tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-gray-400 text-sm">No hay capturas para mostrar.</td></tr>';
+        tbody.innerHTML = '<tr data-empty-row="true"><td colspan="9" class="p-8 text-center text-gray-400 text-sm">No hay capturas para mostrar.</td></tr>';
         return;
     }
 
-    tbody.innerHTML = visibles.map(c => {
-        const diff = c.diferencia;
-        const diffClase = diff === null ? 'text-gray-400' : diff === 0 ? 'text-emerald-600' : 'text-red-600';
-        const estadoCompleto = c.estado === 'completado';
-        return `
-            <tr class="hover:bg-slate-50">
-                <td class="p-3 text-xs whitespace-nowrap">${formatearFecha(c.fechahora)}</td>
-                <td class="p-3 font-mono text-xs">${escaparHtml(c.codigo)}</td>
-                <td class="p-3 font-semibold">${escaparHtml(c.producto)}</td>
-                <td class="p-3 font-bold text-slate-900">${c.fisico}</td>
-                <td class="p-3">
-                    <input
-                        id="sicar-${c.id}"
-                        type="number"
-                        step="1"
-                        value="${c.sicar ?? ''}"
-                        placeholder="Capturar"
-                        oninput="actualizarDiferenciaVista('${c.id}')"
-                        class="w-24 border rounded p-1.5 text-sm font-bold bg-white focus:ring-2 focus:ring-amber-500 outline-none"
-                        title="Consulta SICAR ahora y escribe aquí la existencia vigente"
-                    />
-                </td>
-                <td id="diferencia-${c.id}" class="p-3 font-bold ${diffClase}">${formatearDiferencia(diff)}</td>
-                <td class="p-3">
-                    <span class="px-2 py-1 rounded-full text-[10px] font-bold uppercase ${estadoCompleto ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">
-                        ${estadoCompleto ? 'Completado' : 'Pendiente'}
-                    </span>
-                </td>
-                <td class="p-3 text-center">
-                    <button onclick="guardarValidacionCaptura('${c.id}')" class="bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded text-xs font-bold shadow">
-                        <i class="fa-solid fa-check me-1 text-amber-400"></i>${estadoCompleto ? 'Actualizar' : 'Validar'}
-                    </button>
-                </td>
-            </tr>
-        `;
-    }).join('');
+    tbody.innerHTML = visibles.map(htmlFilaCaptura).join('');
+}
+
+function insertarCapturasNuevasEnTabla() {
+    const tbody = document.getElementById('tabla-capturas');
+    if (!tbody) return;
+
+    const existentes = new Set(
+        [...tbody.querySelectorAll('tr[data-captura-id]')]
+            .map(fila => fila.getAttribute('data-captura-id'))
+            .filter(Boolean)
+    );
+
+    const nuevas = capturasVisiblesEnFiltro().filter(c => !existentes.has(String(c.id)));
+    if (!nuevas.length) return;
+
+    tbody.querySelector('tr[data-empty-row="true"]')?.remove();
+
+    // capturas viene ordenado de la más reciente a la más antigua. Insertamos al revés
+    // para conservar ese orden al utilizar afterbegin.
+    nuevas.slice().reverse().forEach(c => {
+        tbody.insertAdjacentHTML('afterbegin', htmlFilaCaptura(c));
+    });
 }
 
 function filtrarTabla(filtro) {
@@ -568,6 +720,7 @@ async function guardarValidacionCaptura(id) {
         const actualizada = normalizarCaptura(respuesta.data);
         const indice = capturas.findIndex(c => c.id === id);
         if (indice >= 0) capturas[indice] = actualizada;
+        borradoresSicar.delete(id);
         renderizarTabla();
         mostrarToast('Captura validada correctamente');
     } catch (error) {
@@ -804,22 +957,139 @@ function mostrarToast(msg, tipo = 'success') {
     mostrarToast._timer = setTimeout(() => toast.classList.add('hidden'), 2800);
 }
 
-window.addEventListener('load', async () => {
-    const codigoInput = document.getElementById('codigo-input');
-    codigoInput?.addEventListener('keydown', async event => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            await procesarEscaneoEmpleado(codigoInput.value);
+
+function programarSincronizacionTiempoReal({ capturas: recargarCapturas = false, productos = false, sesion = false } = {}) {
+    sincronizacionTiempoRealPendiente.capturas ||= recargarCapturas;
+    sincronizacionTiempoRealPendiente.productos ||= productos;
+    sincronizacionTiempoRealPendiente.sesion ||= sesion;
+
+    if (sincronizacionTiempoRealTimer) return;
+
+    sincronizacionTiempoRealTimer = setTimeout(async () => {
+        sincronizacionTiempoRealTimer = null;
+        const pendiente = { ...sincronizacionTiempoRealPendiente };
+        sincronizacionTiempoRealPendiente.capturas = false;
+        sincronizacionTiempoRealPendiente.productos = false;
+        sincronizacionTiempoRealPendiente.sesion = false;
+
+        try {
+            if (pendiente.sesion) await cargarSesionInventarioActiva();
+            if (pendiente.productos) await cargarProductosDesdeBD();
+            if (pendiente.capturas) await cargarCapturasDesdeBD({ silencioso: true });
+        } catch (error) {
+            console.warn('No se pudo sincronizar el inventario en tiempo real:', error);
+        }
+    }, 80);
+}
+
+function procesarEventoInventarioTiempoReal(evento) {
+    const tipo = String(evento?.tipo || '');
+    if (!tipo || tipo === 'conexion') return;
+
+    if (tipo === 'captura_creada' || tipo === 'captura_actualizada') {
+        programarSincronizacionTiempoReal({ capturas: true });
+        return;
+    }
+
+    if (tipo === 'sesion_nueva') {
+        programarSincronizacionTiempoReal({ sesion: true, capturas: true });
+        return;
+    }
+
+    if (tipo === 'catalogo_actualizado') {
+        programarSincronizacionTiempoReal({ productos: true });
+    }
+}
+
+function detenerEventosInventarioTiempoReal() {
+    if (eventosInventarioReconectarTimer) {
+        clearTimeout(eventosInventarioReconectarTimer);
+        eventosInventarioReconectarTimer = null;
+    }
+    if (eventosInventarioAbortController) {
+        eventosInventarioAbortController.abort();
+        eventosInventarioAbortController = null;
+    }
+}
+
+function iniciarEventosInventarioTiempoReal() {
+    detenerEventosInventarioTiempoReal();
+    if (!obtenerUsuarioActual()) return;
+
+    const controller = new AbortController();
+    eventosInventarioAbortController = controller;
+
+    apiEscucharEventosInventario({
+        signal: controller.signal,
+        onEvento: procesarEventoInventarioTiempoReal
+    }).then(() => {
+        if (controller.signal.aborted || !obtenerUsuarioActual()) return;
+        eventosInventarioReconectarTimer = setTimeout(iniciarEventosInventarioTiempoReal, 1500);
+    }).catch(error => {
+        if (error?.name === 'AbortError' || controller.signal.aborted) return;
+        console.warn('Canal en tiempo real desconectado. Se intentará reconectar:', error?.message || error);
+        if (obtenerUsuarioActual()) {
+            eventosInventarioReconectarTimer = setTimeout(iniciarEventosInventarioTiempoReal, 2000);
         }
     });
+}
 
+window.detenerEventosInventarioTiempoReal = detenerEventosInventarioTiempoReal;
+
+async function inicializarAplicacionProtegida() {
+    // Los eventos se registran una sola vez, aunque el usuario cierre sesión y vuelva a entrar.
+    if (!appEventosInicializados) {
+        const codigoInput = document.getElementById('codigo-input');
+        codigoInput?.addEventListener('keydown', async event => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                await procesarEscaneoEmpleado(codigoInput.value);
+            }
+        });
+
+        // Respaldo periódico. La actualización principal llega mediante el canal SSE,
+        // pero este sondeo permite recuperar el estado si una red móvil corta temporalmente la conexión.
+        intervaloRecepcion = setInterval(() => {
+            if (!obtenerUsuarioActual()) return;
+            const appVisible = !document.getElementById('app-main')?.classList.contains('hidden');
+            if (!appVisible) return;
+            cargarCapturasDesdeBD({ silencioso: true });
+        }, 10000);
+
+        // Al terminar de escribir una existencia SICAR hacemos un render completo para
+        // incorporar también cambios de filas existentes que se hubieran diferido.
+        document.addEventListener('focusout', event => {
+            const elemento = event.target;
+            if (!elemento || elemento.tagName !== 'INPUT' || !String(elemento.id || '').startsWith('sicar-')) return;
+            setTimeout(() => {
+                if (usuarioActualEsAdmin() && !hayEdicionSicarActiva()) renderizarTabla();
+            }, 0);
+        });
+
+        window.addEventListener('focus', () => {
+            if (obtenerUsuarioActual()) cargarCapturasDesdeBD({ silencioso: true });
+        });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && obtenerUsuarioActual()) {
+                cargarCapturasDesdeBD({ silencioso: true });
+            }
+        });
+
+        appEventosInicializados = true;
+    }
+
+    productosDia = [];
+    capturas = [];
+    borradoresSicar.clear();
+    sesionInventarioActiva = null;
+    filtroActual = 'todos';
     await cargarDatosIniciales();
-    iniciarCamaraEmp();
+    iniciarEventosInventarioTiempoReal();
+}
 
-    // Refresco ligero para que el dashboard reciba capturas hechas desde otro dispositivo.
-    setInterval(() => {
-        const adminVisible = !document.getElementById('modulo-admin')?.classList.contains('hidden');
-        const vivoVisible = !document.getElementById('tab-vivo')?.classList.contains('hidden');
-        if (adminVisible && vivoVisible) cargarCapturasDesdeBD({ silencioso: true });
-    }, 5000);
+window.inicializarAplicacionProtegida = inicializarAplicacionProtegida;
+
+window.addEventListener('load', async () => {
+    await inicializarAutenticacion();
 });

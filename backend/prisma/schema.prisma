@@ -4,8 +4,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
@@ -25,14 +25,39 @@ enum EstadoSesion {
 }
 
 model Usuario {
-  id        String   @id @default(uuid())
-  nombre    String
-  email     String   @unique
-  password  String
-  rol       Rol      @default(EMPLEADO)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  capturas  Captura[]
+  id                    String       @id @default(uuid())
+  nombre                String
+  // username será el identificador principal para iniciar sesión.
+  // Se deja opcional durante la transición para no romper registros históricos existentes.
+  username              String?      @unique
+  email                 String?      @unique
+  // Campo legado. Ya NO se usa para autenticar y se limpia con scripts/prepareSecurity.js.
+  password              String?
+  passwordHash          String?
+  rol                   Rol          @default(EMPLEADO)
+  activo                Boolean      @default(true)
+  debeCambiarPassword   Boolean      @default(true)
+  lastLoginAt           DateTime?
+  passwordChangedAt     DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  capturas              Captura[]
+  sesionesAuth          SesionAuth[]
+}
+
+model SesionAuth {
+  id          String   @id @default(uuid())
+  tokenHash   String   @unique
+  usuarioId   String
+  usuario     Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  expiresAt   DateTime
+  revocadaAt  DateTime?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+  lastUsedAt  DateTime @default(now())
+
+  @@index([usuarioId])
+  @@index([expiresAt])
 }
 
 model Producto {
@@ -42,7 +67,7 @@ model Producto {
   precio    Float    @default(0.0)
   stock     Int      @default(0)
   seccion   String?  // Pasillo 1, Refri 2, Mostrador, etc.
-  categoria String?  // Departamento de SICAR
+  categoria String?  // Departamento del POS
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   capturas  Captura[]
@@ -58,20 +83,21 @@ model SesionInventario {
 }
 
 model Captura {
-  id                 String           @id @default(uuid())
-  productoId         String
-  producto           Producto         @relation(fields: [productoId], references: [id], onDelete: Cascade)
-  usuarioId          String
-  usuario            Usuario          @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
-  sesionId           String
-  sesion             SesionInventario @relation(fields: [sesionId], references: [id], onDelete: Cascade)
-  
-  cantidadFisica     Int              // Conteo enviado por la empleada
-  stockSicar         Int?             // Cifra ingresada manualmente por el Admin
-  diferencia         Int?             // cantidadFisica - stockSicar
-  estado             EstadoCaptura    @default(PENDIENTE)
-  seccionCapturada   String?          // Zona específica donde se contó
-  
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  id               String           @id @default(uuid())
+  productoId       String
+  producto         Producto         @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  usuarioId        String
+  // Restrict protege la trazabilidad: un usuario con capturas no debe borrarse físicamente.
+  usuario          Usuario          @relation(fields: [usuarioId], references: [id], onDelete: Restrict)
+  sesionId         String
+  sesion           SesionInventario @relation(fields: [sesionId], references: [id], onDelete: Cascade)
+
+  cantidadFisica   Int              // Conteo enviado por la empleada
+  stockSicar       Int?             // Cifra vigente del POS ingresada manualmente por el Admin
+  diferencia       Int?             // cantidadFisica - stockSicar
+  estado           EstadoCaptura    @default(PENDIENTE)
+  seccionCapturada String?          // Zona específica donde se contó
+
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 }

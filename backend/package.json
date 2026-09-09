@@ -9,7 +9,9 @@
     "dev": "nodemon server.js",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "security:prepare": "node scripts/prepareSecurity.js",
+    "security:create-admin": "node scripts/createAdmin.js"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

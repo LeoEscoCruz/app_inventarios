@@ -10,27 +10,89 @@
 </head>
 <body class="bg-gray-100 font-sans text-gray-800">
 
-    <nav class="bg-slate-900 text-white p-4 shadow-md sticky top-0 z-50">
+    <!-- PANTALLA DE INICIO DE SESIÓN -->
+    <section id="pantalla-login" class="min-h-screen flex items-center justify-center p-4 bg-slate-950">
+        <div class="w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div class="bg-slate-900 text-white p-6 text-center">
+                <div class="w-14 h-14 rounded-2xl bg-amber-500 text-slate-900 flex items-center justify-center mx-auto mb-3 shadow-lg">
+                    <i class="fa-solid fa-boxes-stacked text-2xl"></i>
+                </div>
+                <h1 class="text-xl font-bold">La Flor de México</h1>
+                <p class="text-xs text-slate-300 mt-1">Sistema de Inventarios y Auditoría</p>
+            </div>
+            <form onsubmit="procesarLogin(event)" class="p-6 space-y-4">
+                <div id="login-mensaje" class="hidden text-xs bg-red-50 text-red-700 border border-red-200 rounded-lg p-2.5"></div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-600 mb-1">Usuario</label>
+                    <div class="relative">
+                        <i class="fa-solid fa-user absolute left-3 top-3 text-slate-400"></i>
+                        <input id="login-usuario" type="text" autocomplete="username" required maxlength="80"
+                               class="w-full border rounded-lg py-2.5 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-amber-500"
+                               placeholder="Ingresa tu usuario">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-600 mb-1">Contraseña</label>
+                    <div class="relative">
+                        <i class="fa-solid fa-lock absolute left-3 top-3 text-slate-400"></i>
+                        <input id="login-password" type="password" autocomplete="current-password" required maxlength="128"
+                               class="w-full border rounded-lg py-2.5 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-amber-500"
+                               placeholder="Ingresa tu contraseña">
+                    </div>
+                </div>
+                <button id="btn-login" type="submit"
+                        class="w-full bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold py-2.5 rounded-lg shadow transition flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-right-to-bracket"></i> Iniciar sesión
+                </button>
+                <p class="text-[10px] text-center text-gray-400">
+                    Acceso exclusivo para personal autorizado.
+                </p>
+            </form>
+        </div>
+    </section>
+
+    <nav id="app-nav" class="hidden bg-slate-900 text-white p-4 shadow-md sticky top-0 z-50">
         <div class="max-w-6xl mx-auto flex flex-wrap justify-between items-center gap-2">
             <div class="flex items-center space-x-2">
                 <i class="fa-solid fa-boxes-stacked text-amber-500 text-xl"></i>
                 <span class="font-bold text-lg">La Flor de México</span>
             </div>
-            <div class="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
-                <button onclick="cambiarRol('operativo')" id="btn-operativo" class="px-4 py-1.5 rounded-md text-sm font-bold transition bg-amber-500 text-slate-900">
-                    <i class="fa-solid fa-mobile-screen me-1"></i> Vista Móvil
-                </button>
-                <button onclick="cambiarRol('admin')" id="btn-admin" class="px-4 py-1.5 rounded-md text-sm font-medium transition text-gray-300 hover:text-white">
-                    <i class="fa-solid fa-chart-line me-1"></i> Dashboard Admin
-                </button>
+            <div class="flex flex-wrap items-center gap-2">
+                <div class="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                    <button onclick="cambiarRol('operativo')" id="btn-operativo" class="px-4 py-1.5 rounded-md text-sm font-bold transition bg-amber-500 text-slate-900">
+                        <i class="fa-solid fa-mobile-screen me-1"></i> Vista Móvil
+                    </button>
+                    <button onclick="cambiarRol('admin')" id="btn-admin" class="hidden px-4 py-1.5 rounded-md text-sm font-medium transition text-gray-300 hover:text-white">
+                        <i class="fa-solid fa-chart-line me-1"></i> Dashboard Admin
+                    </button>
+                </div>
+                <div class="flex items-center gap-2 border-l border-slate-700 pl-2">
+                    <div class="hidden sm:block text-right leading-tight">
+                        <div id="usuario-nombre-nav" class="text-xs font-bold">Usuario</div>
+                        <div id="usuario-rol-nav" class="text-[10px] text-slate-400">Rol</div>
+                    </div>
+                    <button onclick="cerrarSesion()" title="Cerrar sesión"
+                            class="w-9 h-9 rounded-lg bg-slate-800 hover:bg-red-900/60 border border-slate-700 flex items-center justify-center text-slate-300 hover:text-white transition">
+                        <i class="fa-solid fa-right-from-bracket"></i>
+                    </button>
+                </div>
             </div>
         </div>
     </nav>
 
-    <main class="max-w-6xl mx-auto p-4">
+    <main id="app-main" class="hidden max-w-6xl mx-auto p-4">
 
         <!-- MÓDULO OPERATIVO -->
         <section id="modulo-operativo" class="max-w-md mx-auto bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden my-2 space-y-4">
+            <div class="px-4 pt-3">
+                <div class="bg-slate-50 border rounded-lg px-3 py-2 flex items-center gap-2">
+                    <i class="fa-solid fa-clipboard-list text-amber-500"></i>
+                    <div class="min-w-0">
+                        <div class="text-[10px] uppercase font-bold text-gray-400">Inventario activo</div>
+                        <div id="sesion-operativa-label" class="text-xs font-bold text-slate-700 truncate">Cargando...</div>
+                    </div>
+                </div>
+            </div>
             <div class="flex border-b bg-gray-50 text-xs font-bold text-gray-500">
                 <button onclick="cambiarSubTabEmp('escaner')" id="subtab-escaner" class="w-1/2 py-3 border-b-2 border-amber-500 text-amber-600 bg-white">
                     <i class="fa-solid fa-camera me-1"></i> Escáner
@@ -116,6 +178,18 @@
 
             <!-- RECEPCIÓN EN VIVO -->
             <div id="tab-vivo" class="space-y-4">
+                <div class="bg-slate-900 text-white p-4 rounded-xl shadow-sm border border-slate-800 flex flex-wrap justify-between items-center gap-3">
+                    <div class="min-w-0">
+                        <div class="text-[10px] uppercase font-bold text-amber-400 tracking-wide">Inventario activo</div>
+                        <div id="sesion-admin-label" class="font-bold truncate">Cargando...</div>
+                        <div id="sesion-admin-fecha" class="text-[10px] text-slate-400 mt-0.5">--</div>
+                    </div>
+                    <button type="button" onclick="iniciarNuevoInventario()"
+                            class="bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold px-3 py-2 rounded-lg text-xs shadow whitespace-nowrap">
+                        <i class="fa-solid fa-rotate me-1"></i> Iniciar nuevo inventario
+                    </button>
+                </div>
+
                 <div class="bg-white p-4 rounded-xl shadow-sm border flex flex-wrap justify-between items-center gap-2">
                     <div>
                         <h2 class="font-bold text-slate-900">Validación y Auditoría vs. SICAR</h2>
@@ -130,12 +204,13 @@
                 </div>
 
                 <div class="bg-white rounded-xl shadow-sm border overflow-x-auto">
-                    <table class="w-full text-left border-collapse min-w-[750px]">
+                    <table class="w-full text-left border-collapse min-w-[950px]">
                         <thead>
                             <tr class="bg-slate-50 border-b text-xs font-semibold text-gray-500 uppercase">
                                 <th class="p-3">Fecha y Hora</th>
                                 <th class="p-3">Código</th>
                                 <th class="p-3">Producto</th>
+                                <th class="p-3">Contado por</th>
                                 <th class="p-3">Físico</th>
                                 <th class="p-3">SICAR actual</th>
                                 <th class="p-3">Diferencia</th>
@@ -263,6 +338,43 @@
         </div>
     </div>
 
+    <!-- CAMBIO OBLIGATORIO DE CONTRASEÑA -->
+    <div id="modal-cambio-password" class="fixed inset-0 bg-slate-950/90 hidden flex items-center justify-center p-4 z-[80]">
+        <div class="bg-white rounded-2xl shadow-2xl border border-gray-200 max-w-sm w-full p-5 space-y-4">
+            <div class="text-center">
+                <div class="w-12 h-12 mx-auto rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center mb-2">
+                    <i class="fa-solid fa-key text-xl"></i>
+                </div>
+                <h3 class="font-bold text-slate-900">Cambia tu contraseña temporal</h3>
+                <p class="text-xs text-gray-500 mt-1">Por seguridad, debes crear una contraseña personal antes de utilizar el sistema.</p>
+            </div>
+
+            <form onsubmit="procesarCambioPassword(event)" class="space-y-3">
+                <div id="cambio-password-error" class="hidden text-xs bg-red-50 text-red-700 border border-red-200 rounded-lg p-2.5"></div>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Contraseña temporal actual</label>
+                    <input id="password-actual" type="password" autocomplete="current-password" required maxlength="128"
+                           class="w-full p-2.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-amber-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Nueva contraseña</label>
+                    <input id="password-nueva" type="password" autocomplete="new-password" required minlength="10" maxlength="128"
+                           class="w-full p-2.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-amber-500">
+                    <p class="text-[10px] text-gray-400 mt-1">Mínimo 10 caracteres. Evita reutilizar contraseñas de otros servicios.</p>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-600 mb-1">Confirmar nueva contraseña</label>
+                    <input id="password-confirmar" type="password" autocomplete="new-password" required minlength="10" maxlength="128"
+                           class="w-full p-2.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-amber-500">
+                </div>
+                <button id="btn-cambiar-password" type="submit"
+                        class="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 rounded-lg shadow flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-key"></i> Guardar nueva contraseña
+                </button>
+            </form>
+        </div>
+    </div>
+
     <!-- TOAST NOTIFICATION -->
     <div id="toast" class="fixed bottom-4 right-4 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-2xl hidden flex items-center gap-3 z-50">
         <i class="fa-solid fa-circle-check text-emerald-400 text-lg"></i>
@@ -272,6 +384,7 @@
     <!-- CARGA DE SCRIPTS MODULARIZADOS -->
     <script src="src/js/scanner.js"></script>
     <script src="src/js/api.js"></script>
+    <script src="src/js/auth.js"></script>
     <script src="src/js/app.js"></script>
 </body>
 </html>
