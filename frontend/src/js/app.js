@@ -13,6 +13,9 @@ let eventosInventarioAbortController = null;
 let eventosInventarioReconectarTimer = null;
 let sincronizacionTiempoRealTimer = null;
 const sincronizacionTiempoRealPendiente = { capturas: false, productos: false, sesion: false };
+let usuariosAdmin = [];
+let cargandoUsuariosAdmin = false;
+let passwordTemporalActual = '';
 // Conserva lo que el administrador está escribiendo en SICAR aunque llegue un refresco en vivo.
 const borradoresSicar = new Map();
 
@@ -265,28 +268,319 @@ function cambiarSubTabEmp(tab) {
 }
 
 function cambiarTabAdmin(tab) {
-    const tabVivo = document.getElementById('tab-vivo');
-    const tabMapeo = document.getElementById('tab-mapeo');
-    const btnVivo = document.getElementById('tab-btn-vivo');
-    const btnMapeo = document.getElementById('tab-btn-mapeo');
+    const tabs = {
+        'en-vivo': document.getElementById('tab-vivo'),
+        'mapeo': document.getElementById('tab-mapeo'),
+        'usuarios': document.getElementById('tab-usuarios')
+    };
+    const botones = {
+        'en-vivo': document.getElementById('tab-btn-vivo'),
+        'mapeo': document.getElementById('tab-btn-mapeo'),
+        'usuarios': document.getElementById('tab-btn-usuarios')
+    };
 
-    tabVivo?.classList.toggle('hidden', tab !== 'en-vivo');
-    tabMapeo?.classList.toggle('hidden', tab !== 'mapeo');
+    if (!Object.prototype.hasOwnProperty.call(tabs, tab)) tab = 'en-vivo';
 
-    if (btnVivo) btnVivo.className = tab === 'en-vivo'
-        ? 'px-4 py-2 border-b-2 border-amber-500 font-bold text-amber-600 text-sm'
-        : 'px-4 py-2 border-b-2 border-transparent font-medium text-gray-500 hover:text-gray-700 text-sm';
+    Object.entries(tabs).forEach(([nombre, elemento]) => {
+        elemento?.classList.toggle('hidden', nombre !== tab);
+    });
 
-    if (btnMapeo) btnMapeo.className = tab === 'mapeo'
-        ? 'px-4 py-2 border-b-2 border-amber-500 font-bold text-amber-600 text-sm'
-        : 'px-4 py-2 border-b-2 border-transparent font-medium text-gray-500 hover:text-gray-700 text-sm';
+    Object.entries(botones).forEach(([nombre, boton]) => {
+        if (!boton) return;
+        boton.className = nombre === tab
+            ? 'px-4 py-2 border-b-2 border-amber-500 font-bold text-amber-600 text-sm'
+            : 'px-4 py-2 border-b-2 border-transparent font-medium text-gray-500 hover:text-gray-700 text-sm';
+    });
 
     if (tab === 'mapeo') {
         renderizarMapeoAdmin();
         iniciarCamaraAdmin();
+        return;
+    }
+
+    detenerCamaraAdmin();
+    if (tab === 'usuarios') {
+        cargarUsuariosAdmin({ silencioso: usuariosAdmin.length > 0 });
     } else {
-        detenerCamaraAdmin();
         cargarCapturasDesdeBD({ silencioso: true });
+    }
+}
+
+async function cargarUsuariosAdmin({ silencioso = false } = {}) {
+    if (!usuarioActualEsAdmin() || cargandoUsuariosAdmin) return;
+
+    cargandoUsuariosAdmin = true;
+    const tbody = document.getElementById('tabla-usuarios-admin');
+    if (!silencioso && tbody && usuariosAdmin.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-xs text-gray-400"><i class="fa-solid fa-spinner fa-spin me-1"></i> Cargando usuarios...</td></tr>';
+    }
+
+    try {
+        const respuesta = await apiObtenerUsuarios();
+        usuariosAdmin = Array.isArray(respuesta?.data) ? respuesta.data : [];
+        renderizarUsuariosAdmin();
+    } catch (error) {
+        console.error('Error al cargar usuarios:', error);
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-xs text-red-600">${escaparHtml(error.message || 'No se pudieron cargar los usuarios')}</td></tr>`;
+        }
+        if (!silencioso) mostrarToast(`No se pudieron cargar los usuarios: ${error.message}`, 'error');
+    } finally {
+        cargandoUsuariosAdmin = false;
+    }
+}
+
+function actualizarResumenUsuariosAdmin() {
+    const activos = usuariosAdmin.filter(u => u.activo).length;
+    const empleados = usuariosAdmin.filter(u => u.activo && u.rol === 'EMPLEADO').length;
+    const admins = usuariosAdmin.filter(u => u.activo && u.rol === 'ADMIN').length;
+    const inactivos = usuariosAdmin.filter(u => !u.activo).length;
+
+    const valores = {
+        'usuarios-total-activos': activos,
+        'usuarios-total-empleados': empleados,
+        'usuarios-total-admins': admins,
+        'usuarios-total-inactivos': inactivos
+    };
+    Object.entries(valores).forEach(([id, valor]) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = String(valor);
+    });
+}
+
+function usuariosAdminFiltrados() {
+    const busqueda = String(document.getElementById('usuarios-busqueda')?.value || '').trim().toLowerCase();
+    const rol = document.getElementById('usuarios-filtro-rol')?.value || 'TODOS';
+    const estado = document.getElementById('usuarios-filtro-estado')?.value || 'TODOS';
+
+    return usuariosAdmin.filter(usuario => {
+        const coincideTexto = !busqueda || [usuario.nombre, usuario.username, usuario.email]
+            .filter(Boolean)
+            .some(valor => String(valor).toLowerCase().includes(busqueda));
+        const coincideRol = rol === 'TODOS' || usuario.rol === rol;
+        const coincideEstado = estado === 'TODOS'
+            || (estado === 'ACTIVO' && usuario.activo)
+            || (estado === 'INACTIVO' && !usuario.activo);
+        return coincideTexto && coincideRol && coincideEstado;
+    });
+}
+
+function renderizarUsuariosAdmin() {
+    actualizarResumenUsuariosAdmin();
+    const tbody = document.getElementById('tabla-usuarios-admin');
+    if (!tbody) return;
+
+    const actual = obtenerUsuarioActual();
+    const filtrados = usuariosAdminFiltrados();
+
+    if (!filtrados.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-xs text-gray-400">No hay usuarios que coincidan con los filtros.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = filtrados.map(usuario => {
+        const esActual = usuario.id === actual?.id;
+        const cuentaHistorica = !usuario.username;
+        const idSeguro = String(usuario.id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+        const rolAdmin = usuario.rol === 'ADMIN';
+        const ultimoAcceso = usuario.lastLoginAt ? formatearFecha(usuario.lastLoginAt) : 'Nunca';
+        const correo = usuario.email ? `<div class="text-[10px] text-gray-400 mt-0.5">${escaparHtml(usuario.email)}</div>` : '';
+        const distintivoActual = esActual ? '<span class="ml-1 text-[9px] bg-slate-900 text-white px-1.5 py-0.5 rounded">Tú</span>' : '';
+        const usuarioVisible = usuario.username
+            ? `<span class="font-mono font-bold text-slate-800">${escaparHtml(usuario.username)}</span>${distintivoActual}${correo}`
+            : '<span class="text-xs text-gray-400 italic">Registro histórico sin usuario</span>';
+        const seguridad = cuentaHistorica
+            ? '<span class="text-[10px] font-bold text-gray-400">Sin acceso</span>'
+            : usuario.debeCambiarPassword
+                ? '<span class="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-full"><i class="fa-solid fa-key"></i> Cambio pendiente</span>'
+                : '<span class="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-full"><i class="fa-solid fa-shield-halved"></i> Configurada</span>';
+        const estado = usuario.activo
+            ? '<span class="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-full"><i class="fa-solid fa-circle text-[6px]"></i> Activo</span>'
+            : '<span class="inline-flex items-center gap-1 text-[10px] font-bold text-gray-600 bg-gray-100 border px-2 py-1 rounded-full"><i class="fa-solid fa-ban"></i> Desactivado</span>';
+        const rolHtml = rolAdmin
+            ? '<span class="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1 rounded-full">ADMIN</span>'
+            : '<span class="text-[10px] font-bold text-slate-700 bg-slate-100 border px-2 py-1 rounded-full">EMPLEADO</span>';
+
+        let acciones = '';
+        if (cuentaHistorica) {
+            acciones = '<span class="text-[10px] text-gray-400">Solo trazabilidad</span>';
+        } else if (esActual) {
+            acciones = '<span class="text-[10px] text-gray-400"><i class="fa-solid fa-lock me-1"></i> Cuenta actual</span>';
+        } else {
+            const estadoBoton = usuario.activo
+                ? `<button type="button" onclick="cambiarEstadoUsuarioAdmin('${idSeguro}', true)" class="px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-red-50 text-red-700 border border-red-200 hover:bg-red-100" title="Desactivar cuenta"><i class="fa-solid fa-user-slash me-1"></i> Desactivar</button>`
+                : `<button type="button" onclick="cambiarEstadoUsuarioAdmin('${idSeguro}', false)" class="px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100" title="Activar cuenta"><i class="fa-solid fa-user-check me-1"></i> Activar</button>`;
+            acciones = `${estadoBoton}<button type="button" onclick="restablecerPasswordUsuarioAdmin('${idSeguro}')" class="px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-700 border hover:bg-slate-200" title="Generar nueva contraseña temporal"><i class="fa-solid fa-key me-1"></i> Restablecer</button>`;
+        }
+
+        return `<tr class="hover:bg-slate-50/70">
+            <td class="p-3">
+                <div class="font-semibold text-slate-900">${escaparHtml(usuario.nombre || 'Sin nombre')}</div>
+                <div class="text-[10px] text-gray-400">Creado: ${usuario.createdAt ? escaparHtml(formatearFecha(usuario.createdAt)) : '--'}</div>
+            </td>
+            <td class="p-3">${usuarioVisible}</td>
+            <td class="p-3">${rolHtml}</td>
+            <td class="p-3">${estado}</td>
+            <td class="p-3">${seguridad}</td>
+            <td class="p-3 text-xs text-gray-600">${escaparHtml(ultimoAcceso)}</td>
+            <td class="p-3"><div class="flex justify-center gap-2 flex-wrap">${acciones}</div></td>
+        </tr>`;
+    }).join('');
+}
+
+function abrirModalNuevoUsuario() {
+    if (!usuarioActualEsAdmin()) return;
+    const form = document.getElementById('form-nuevo-usuario');
+    form?.reset();
+    const errorBox = document.getElementById('nuevo-usuario-error');
+    errorBox?.classList.add('hidden');
+    document.getElementById('modal-nuevo-usuario')?.classList.remove('hidden');
+    setTimeout(() => document.getElementById('nuevo-usuario-nombre')?.focus(), 50);
+}
+
+function cerrarModalNuevoUsuario() {
+    document.getElementById('modal-nuevo-usuario')?.classList.add('hidden');
+    document.getElementById('nuevo-usuario-error')?.classList.add('hidden');
+}
+
+async function guardarNuevoUsuario(event) {
+    event.preventDefault();
+    if (!usuarioActualEsAdmin()) return;
+
+    const nombre = String(document.getElementById('nuevo-usuario-nombre')?.value || '').trim();
+    const username = String(document.getElementById('nuevo-usuario-username')?.value || '').trim().toLowerCase();
+    const email = String(document.getElementById('nuevo-usuario-email')?.value || '').trim().toLowerCase();
+    const rol = String(document.getElementById('nuevo-usuario-rol')?.value || 'EMPLEADO').toUpperCase();
+    const errorBox = document.getElementById('nuevo-usuario-error');
+    const btn = document.getElementById('btn-crear-usuario');
+
+    const mostrarError = texto => {
+        if (!errorBox) return;
+        errorBox.textContent = texto;
+        errorBox.classList.remove('hidden');
+    };
+
+    if (nombre.length < 2 || nombre.length > 100) return mostrarError('Ingresa un nombre válido.');
+    if (!/^[a-z0-9._-]{3,40}$/.test(username)) {
+        return mostrarError('El usuario debe tener 3 a 40 caracteres y usar solo letras, números, punto, guion o guion bajo.');
+    }
+    if (!['ADMIN', 'EMPLEADO'].includes(rol)) return mostrarError('Selecciona un rol válido.');
+
+    if (rol === 'ADMIN') {
+        const confirmado = window.confirm('Esta cuenta tendrá acceso completo al Dashboard y a la administración de usuarios. ¿Deseas crearla como Administrador?');
+        if (!confirmado) return;
+    }
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i> Creando...';
+    }
+    errorBox?.classList.add('hidden');
+
+    try {
+        const respuesta = await apiCrearUsuario({ nombre, username, email: email || null, rol });
+        cerrarModalNuevoUsuario();
+        await cargarUsuariosAdmin({ silencioso: true });
+        mostrarCredencialTemporal({
+            titulo: 'Usuario creado correctamente',
+            username: respuesta?.data?.username || username,
+            password: respuesta?.temporaryPassword || ''
+        });
+        mostrarToast('Usuario creado correctamente');
+    } catch (error) {
+        mostrarError(error.message || 'No fue posible crear el usuario.');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-user-plus me-1"></i> Crear cuenta';
+        }
+    }
+}
+
+async function cambiarEstadoUsuarioAdmin(id, activoActual) {
+    if (!usuarioActualEsAdmin()) return;
+    const usuario = usuariosAdmin.find(u => u.id === id);
+    if (!usuario) return mostrarToast('Usuario no encontrado', 'error');
+    if (usuario.id === obtenerUsuarioActual()?.id) return mostrarToast('No puedes desactivar tu propia cuenta', 'error');
+
+    const nuevoEstado = !activoActual;
+    const accion = nuevoEstado ? 'activar' : 'desactivar';
+    const advertencia = nuevoEstado
+        ? `¿Deseas activar nuevamente la cuenta de ${usuario.nombre}?`
+        : `¿Deseas desactivar la cuenta de ${usuario.nombre}?\n\nSus sesiones abiertas se cerrarán inmediatamente.`;
+    if (!window.confirm(advertencia)) return;
+
+    try {
+        await apiCambiarEstadoUsuario(id, nuevoEstado);
+        await cargarUsuariosAdmin({ silencioso: true });
+        mostrarToast(`Usuario ${nuevoEstado ? 'activado' : 'desactivado'} correctamente`);
+    } catch (error) {
+        mostrarToast(error.message || `No fue posible ${accion} el usuario`, 'error');
+    }
+}
+
+async function restablecerPasswordUsuarioAdmin(id) {
+    if (!usuarioActualEsAdmin()) return;
+    const usuario = usuariosAdmin.find(u => u.id === id);
+    if (!usuario) return mostrarToast('Usuario no encontrado', 'error');
+    if (!usuario.username) return mostrarToast('Este registro histórico no tiene una cuenta de acceso', 'error');
+    if (usuario.id === obtenerUsuarioActual()?.id) {
+        return mostrarToast('Para evitar cerrar tu propia sesión, no restablezcas aquí la cuenta con la que estás conectado', 'error');
+    }
+
+    const confirmado = window.confirm(
+        `Se generará una nueva contraseña temporal para ${usuario.nombre}.\n\n` +
+        'Todas sus sesiones actuales se cerrarán y deberá cambiar la contraseña al volver a entrar.\n\n¿Deseas continuar?'
+    );
+    if (!confirmado) return;
+
+    try {
+        const respuesta = await apiResetPasswordUsuario(id);
+        await cargarUsuariosAdmin({ silencioso: true });
+        mostrarCredencialTemporal({
+            titulo: 'Contraseña restablecida',
+            username: usuario.username,
+            password: respuesta?.temporaryPassword || ''
+        });
+    } catch (error) {
+        mostrarToast(error.message || 'No fue posible restablecer la contraseña', 'error');
+    }
+}
+
+function mostrarCredencialTemporal({ titulo, username, password }) {
+    passwordTemporalActual = String(password || '');
+    const tituloEl = document.getElementById('credencial-temporal-titulo');
+    const usuarioEl = document.getElementById('credencial-temporal-usuario');
+    const passwordEl = document.getElementById('credencial-temporal-password');
+    if (tituloEl) tituloEl.textContent = titulo || 'Credencial temporal generada';
+    if (usuarioEl) usuarioEl.textContent = username || '--';
+    if (passwordEl) passwordEl.value = passwordTemporalActual;
+    document.getElementById('modal-credencial-temporal')?.classList.remove('hidden');
+}
+
+function cerrarModalCredencialTemporal() {
+    passwordTemporalActual = '';
+    const passwordEl = document.getElementById('credencial-temporal-password');
+    if (passwordEl) passwordEl.value = '';
+    document.getElementById('modal-credencial-temporal')?.classList.add('hidden');
+}
+
+async function copiarPasswordTemporal() {
+    if (!passwordTemporalActual) return mostrarToast('No hay una contraseña temporal para copiar', 'error');
+    try {
+        await navigator.clipboard.writeText(passwordTemporalActual);
+        mostrarToast('Contraseña temporal copiada');
+    } catch (_) {
+        const input = document.getElementById('credencial-temporal-password');
+        if (!input) return;
+        input.focus();
+        input.select();
+        try {
+            document.execCommand('copy');
+            mostrarToast('Contraseña temporal copiada');
+        } catch (_) {
+            mostrarToast('No fue posible copiar automáticamente. Selecciona la contraseña manualmente.', 'error');
+        }
     }
 }
 
@@ -1081,6 +1375,8 @@ async function inicializarAplicacionProtegida() {
 
     productosDia = [];
     capturas = [];
+    usuariosAdmin = [];
+    passwordTemporalActual = '';
     borradoresSicar.clear();
     sesionInventarioActiva = null;
     filtroActual = 'todos';
