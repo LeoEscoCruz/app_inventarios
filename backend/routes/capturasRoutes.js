@@ -44,6 +44,9 @@ router.use(autenticarUsuario, requerirPasswordActualizado);
 router.get('/progreso', async (_req, res) => {
   try {
     const sesion = await obtenerSesionInventarioActiva();
+    if (!sesion) {
+      return res.json({ success: true, sesion: null, data: [] });
+    }
 
     const registros = await prisma.captura.findMany({
       where: { sesionId: sesion.id },
@@ -113,6 +116,10 @@ router.get('/mias', async (req, res) => {
 router.get('/', requerirRol('ADMIN'), async (_req, res) => {
   try {
     const sesion = await obtenerSesionInventarioActiva();
+    if (!sesion) {
+      return res.json({ success: true, sesion: null, data: [] });
+    }
+
     const capturas = await prisma.captura.findMany({
       where: { sesionId: sesion.id },
       include: includeCapturaAdmin,
@@ -150,6 +157,13 @@ router.post('/', async (req, res) => {
     }
 
     const sesion = await obtenerSesionInventarioActiva();
+    if (!sesion) {
+      return res.status(409).json({
+        success: false,
+        code: 'NO_ACTIVE_INVENTORY',
+        message: 'No hay un inventario activo. Un administrador debe iniciar uno antes de registrar conteos.'
+      });
+    }
 
     const capturaExistente = await prisma.captura.findFirst({
       where: { productoId: producto.id, sesionId: sesion.id },
@@ -194,10 +208,21 @@ router.post('/', async (req, res) => {
 router.put('/:id', requerirRol('ADMIN'), async (req, res) => {
   try {
     const { id } = req.params;
-    const capturaActual = await prisma.captura.findUnique({ where: { id } });
+    const capturaActual = await prisma.captura.findUnique({
+      where: { id },
+      include: { sesion: { select: { id: true, estado: true } } }
+    });
 
     if (!capturaActual) {
       return res.status(404).json({ success: false, message: 'Captura no encontrada' });
+    }
+
+    if (capturaActual.sesion?.estado !== 'ACTIVA') {
+      return res.status(409).json({
+        success: false,
+        code: 'INVENTORY_CLOSED',
+        message: 'Este inventario ya fue finalizado y su información es de solo lectura'
+      });
     }
 
     const data = {};

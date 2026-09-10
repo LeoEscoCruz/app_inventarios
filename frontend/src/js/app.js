@@ -16,6 +16,9 @@ const sincronizacionTiempoRealPendiente = { capturas: false, productos: false, s
 let usuariosAdmin = [];
 let cargandoUsuariosAdmin = false;
 let passwordTemporalActual = '';
+let historialInventariosAdmin = [];
+let detalleInventarioAdmin = null;
+let cargandoHistorialAdmin = false;
 // Conserva lo que el administrador está escribiendo en SICAR aunque llegue un refresco en vivo.
 const borradoresSicar = new Map();
 
@@ -115,8 +118,8 @@ async function cargarCapturasDesdeBD({ silencioso = false } = {}) {
             ? await apiObtenerCapturas()
             : await apiObtenerProgresoInventario();
         capturas = Array.isArray(respuesta?.data) ? respuesta.data.map(normalizarCaptura) : [];
-        if (respuesta?.sesion) {
-            sesionInventarioActiva = respuesta.sesion;
+        if (respuesta && Object.prototype.hasOwnProperty.call(respuesta, 'sesion')) {
+            sesionInventarioActiva = respuesta.sesion || null;
             actualizarIndicadoresSesion();
         }
         sincronizarProductosContados();
@@ -149,18 +152,36 @@ async function cargarSesionInventarioActiva() {
 }
 
 function actualizarIndicadoresSesion() {
-    const nombre = sesionInventarioActiva?.nombre || 'Inventario activo';
-    const fecha = sesionInventarioActiva?.fechaInicio
+    const haySesion = Boolean(sesionInventarioActiva?.id);
+    const nombre = haySesion ? sesionInventarioActiva.nombre : 'Sin inventario activo';
+    const fecha = haySesion && sesionInventarioActiva?.fechaInicio
         ? formatearFecha(sesionInventarioActiva.fechaInicio)
         : '--';
 
     const labelOperativo = document.getElementById('sesion-operativa-label');
     const labelAdmin = document.getElementById('sesion-admin-label');
     const fechaAdmin = document.getElementById('sesion-admin-fecha');
+    const btnFinalizar = document.getElementById('btn-finalizar-inventario');
+    const btnIniciar = document.getElementById('btn-iniciar-inventario');
+    const btnRegistrar = document.getElementById('btn-registrar-conteo');
 
     if (labelOperativo) labelOperativo.textContent = nombre;
     if (labelAdmin) labelAdmin.textContent = nombre;
-    if (fechaAdmin) fechaAdmin.textContent = `Iniciado: ${fecha}`;
+    if (fechaAdmin) {
+        fechaAdmin.textContent = haySesion
+            ? `Iniciado: ${fecha}`
+            : 'Finaliza el inventario anterior o inicia uno nuevo para continuar.';
+    }
+
+    btnFinalizar?.classList.toggle('hidden', !haySesion);
+    btnIniciar?.classList.toggle('hidden', haySesion);
+
+    if (btnRegistrar) {
+        btnRegistrar.disabled = !haySesion;
+        btnRegistrar.classList.toggle('opacity-50', !haySesion);
+        btnRegistrar.classList.toggle('cursor-not-allowed', !haySesion);
+        btnRegistrar.title = haySesion ? '' : 'No hay un inventario activo';
+    }
 }
 
 async function iniciarNuevoInventario() {
@@ -169,9 +190,14 @@ async function iniciarNuevoInventario() {
         return;
     }
 
+    if (sesionInventarioActiva?.id) {
+        mostrarToast('Primero finaliza el inventario activo', 'error');
+        return;
+    }
+
     const confirmado = window.confirm(
-        'Se cerrará el inventario actual y comenzará uno nuevo.\n\n' +
-        'Las capturas anteriores se conservarán para el histórico y todos los productos volverán a aparecer como pendientes.\n\n' +
+        'Se iniciará una nueva sesión de inventario.\n\n' +
+        'Todos los productos estarán disponibles nuevamente para conteo.\n\n' +
         '¿Deseas continuar?'
     );
     if (!confirmado) return;
@@ -192,6 +218,260 @@ async function iniciarNuevoInventario() {
         console.error(error);
         mostrarToast(`No se pudo iniciar el nuevo inventario: ${error.message}`, 'error');
     }
+}
+
+async function finalizarInventario({ forzar = false } = {}) {
+    if (!usuarioActualEsAdmin()) {
+        mostrarToast('Solo un administrador puede finalizar un inventario', 'error');
+        return;
+    }
+
+    if (!sesionInventarioActiva?.id) {
+        mostrarToast('No hay un inventario activo para finalizar', 'error');
+        return;
+    }
+
+    if (!forzar) {
+        const confirmado = window.confirm(
+            `¿Deseas finalizar "${sesionInventarioActiva.nombre}"?\n\n` +
+            'Después de cerrarlo sus conteos y validaciones quedarán como historial de solo lectura.'
+        );
+        if (!confirmado) return;
+    }
+
+    try {
+        const respuesta = await apiFinalizarSesionInventario(forzar);
+        const resumen = respuesta?.data?.resumen || {};
+
+        sesionInventarioActiva = null;
+        capturas = [];
+        borradoresSicar.clear();
+        productosDia.forEach(producto => { producto.contado = false; });
+        filtroActual = 'todos';
+        actualizarIndicadoresSesion();
+        renderizarListaEmpleado();
+        renderizarTabla();
+
+        if (usuarioActualEsAdmin()) {
+            await cargarHistorialInventarios({ silencioso: true });
+        }
+
+        const diferencias = Number(resumen.conDiferencia || 0);
+        mostrarToast(`Inventario finalizado: ${resumen.validadas || 0} validados, ${diferencias} con diferencia.`);
+    } catch (error) {
+        console.error(error);
+
+        if (error?.code === 'INVENTORY_HAS_PENDING' && !forzar) {
+            const pendientes = Number(error?.body?.pendientes || 0);
+            const confirmarForzado = window.confirm(
+                `Quedan ${pendientes} conteos pendientes de validar contra SICAR.\n\n` +
+                'Si finalizas ahora, esos registros quedarán pendientes dentro del historial y ya no podrán modificarse.\n\n' +
+                '¿Deseas finalizar de todas formas?'
+            );
+            if (confirmarForzado) await finalizarInventario({ forzar: true });
+            return;
+        }
+
+        if (error?.code === 'INVENTORY_EMPTY' && !forzar) {
+            const confirmarVacio = window.confirm(
+                'Este inventario todavía no tiene ningún conteo registrado.\n\n' +
+                'Normalmente no deberías cerrarlo vacío. ¿Deseas finalizarlo de todas formas?'
+            );
+            if (confirmarVacio) await finalizarInventario({ forzar: true });
+            return;
+        }
+
+        mostrarToast(`No se pudo finalizar el inventario: ${error.message}`, 'error');
+    }
+}
+
+function formatoFechaSoloDia(fechaISO) {
+    if (!fechaISO) return '--';
+    const [year, month, day] = String(fechaISO).split('-').map(Number);
+    if (!year || !month || !day) return escaparHtml(String(fechaISO));
+    return new Date(year, month - 1, day).toLocaleDateString('es-MX', {
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric'
+    });
+}
+
+function formatearBalanceUnidades(valor) {
+    const numero = Number(valor || 0);
+    return numero > 0 ? `+${numero}` : String(numero);
+}
+
+async function cargarHistorialInventarios({ silencioso = false } = {}) {
+    if (!usuarioActualEsAdmin() || cargandoHistorialAdmin) return;
+    cargandoHistorialAdmin = true;
+
+    const contenedor = document.getElementById('historial-lista');
+    if (!silencioso && contenedor && historialInventariosAdmin.length === 0) {
+        contenedor.innerHTML = '<div class="p-8 text-center text-xs text-gray-400"><i class="fa-solid fa-spinner fa-spin me-1"></i> Cargando historial...</div>';
+    }
+
+    try {
+        const respuesta = await apiObtenerHistorialInventarios();
+        historialInventariosAdmin = Array.isArray(respuesta?.data) ? respuesta.data : [];
+        renderizarHistorialInventarios();
+    } catch (error) {
+        console.error('Error al cargar historial:', error);
+        if (contenedor) {
+            contenedor.innerHTML = `<div class="p-8 text-center text-xs text-red-600">${escaparHtml(error.message || 'No se pudo cargar el historial')}</div>`;
+        }
+        if (!silencioso) mostrarToast(`No se pudo cargar el historial: ${error.message}`, 'error');
+    } finally {
+        cargandoHistorialAdmin = false;
+    }
+}
+
+function renderizarHistorialInventarios() {
+    const contenedor = document.getElementById('historial-lista');
+    if (!contenedor) return;
+
+    if (!historialInventariosAdmin.length) {
+        contenedor.innerHTML = `
+            <div class="p-10 text-center text-gray-400">
+                <i class="fa-solid fa-box-archive text-3xl mb-2"></i>
+                <div class="text-sm font-bold text-slate-600">Todavía no hay inventarios finalizados</div>
+                <div class="text-xs mt-1">Cuando cierres el inventario actual aparecerá aquí automáticamente.</div>
+            </div>`;
+        return;
+    }
+
+    contenedor.innerHTML = historialInventariosAdmin.map(sesion => {
+        const r = sesion.resumen || {};
+        return `
+            <article class="bg-white border rounded-xl shadow-sm p-4 hover:border-amber-300 transition">
+                <div class="flex flex-wrap justify-between gap-3 items-start">
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <h3 class="font-bold text-slate-900">${escaparHtml(sesion.nombre || 'Inventario')}</h3>
+                            <span class="text-[10px] font-bold uppercase px-2 py-1 rounded-full bg-slate-100 text-slate-600">Finalizado</span>
+                        </div>
+                        <div class="text-[11px] text-gray-400 mt-1">${formatearFecha(sesion.fechaInicio)} → ${formatearFecha(sesion.fechaFin)}</div>
+                    </div>
+                    <button type="button" onclick="abrirDetalleInventario('${escaparHtml(sesion.id)}')"
+                            class="bg-slate-900 hover:bg-slate-800 text-white font-bold px-3 py-2 rounded-lg text-xs whitespace-nowrap">
+                        <i class="fa-solid fa-eye me-1 text-amber-400"></i> Ver detalle
+                    </button>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mt-4">
+                    <div class="bg-slate-50 rounded-lg p-2.5"><div class="text-[9px] uppercase font-bold text-gray-400">Contados</div><div class="font-bold text-slate-900">${r.totalCapturas || 0}</div></div>
+                    <div class="bg-emerald-50 rounded-lg p-2.5"><div class="text-[9px] uppercase font-bold text-emerald-600">Validados</div><div class="font-bold text-emerald-700">${r.validadas || 0}</div></div>
+                    <div class="bg-amber-50 rounded-lg p-2.5"><div class="text-[9px] uppercase font-bold text-amber-600">Pendientes</div><div class="font-bold text-amber-700">${r.pendientes || 0}</div></div>
+                    <div class="bg-red-50 rounded-lg p-2.5"><div class="text-[9px] uppercase font-bold text-red-500">Con diferencia</div><div class="font-bold text-red-600">${r.conDiferencia || 0}</div></div>
+                    <div class="bg-indigo-50 rounded-lg p-2.5 col-span-2 md:col-span-1"><div class="text-[9px] uppercase font-bold text-indigo-500">Balance unidades</div><div class="font-bold text-indigo-700">${formatearBalanceUnidades(r.balanceUnidades)}</div></div>
+                </div>
+            </article>`;
+    }).join('');
+}
+
+async function abrirDetalleInventario(id) {
+    if (!usuarioActualEsAdmin()) return;
+    const panel = document.getElementById('historial-detalle');
+    const contenido = document.getElementById('historial-detalle-contenido');
+    panel?.classList.remove('hidden');
+    if (contenido) contenido.innerHTML = '<div class="p-8 text-center text-xs text-gray-400"><i class="fa-solid fa-spinner fa-spin me-1"></i> Cargando detalle...</div>';
+
+    try {
+        const respuesta = await apiObtenerDetalleInventario(id);
+        detalleInventarioAdmin = respuesta?.data || null;
+        renderizarDetalleInventario();
+        panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (error) {
+        console.error(error);
+        if (contenido) contenido.innerHTML = `<div class="p-8 text-center text-xs text-red-600">${escaparHtml(error.message || 'No se pudo cargar el detalle')}</div>`;
+    }
+}
+
+function cerrarDetalleInventario() {
+    detalleInventarioAdmin = null;
+    document.getElementById('historial-detalle')?.classList.add('hidden');
+}
+
+function renderizarDetalleInventario() {
+    const contenido = document.getElementById('historial-detalle-contenido');
+    if (!contenido || !detalleInventarioAdmin) return;
+
+    const { sesion, resumen = {}, dias = [], capturas: registros = [] } = detalleInventarioAdmin;
+    const participantes = Array.isArray(resumen.participantes) ? resumen.participantes : [];
+
+    const filasDias = dias.length ? dias.map(dia => `
+        <tr class="border-b last:border-0">
+            <td class="p-3 font-semibold text-slate-800">${formatoFechaSoloDia(dia.fecha)}</td>
+            <td class="p-3 text-center">${dia.totalCapturas || 0}</td>
+            <td class="p-3 text-center text-emerald-700 font-bold">${dia.validadas || 0}</td>
+            <td class="p-3 text-center text-amber-700 font-bold">${dia.pendientes || 0}</td>
+            <td class="p-3 text-center text-red-600 font-bold">${dia.conDiferencia || 0}</td>
+            <td class="p-3 text-center font-bold">${formatearBalanceUnidades(dia.balanceUnidades)}</td>
+        </tr>`).join('') : '<tr><td colspan="6" class="p-6 text-center text-xs text-gray-400">No hubo capturas en este inventario.</td></tr>';
+
+    const filasDetalle = registros.length ? registros.map(registro => {
+        const diferencia = registro.diferencia;
+        const usuario = registro.usuario?.nombre || registro.usuario?.username || 'Sin identificar';
+        return `
+            <tr class="border-b last:border-0">
+                <td class="p-3 text-xs whitespace-nowrap">${formatearFecha(registro.createdAt)}</td>
+                <td class="p-3 font-mono text-xs">${escaparHtml(registro.producto?.codigo || '--')}</td>
+                <td class="p-3 font-semibold">${escaparHtml(registro.producto?.nombre || 'Producto')}</td>
+                <td class="p-3">${escaparHtml(usuario)}</td>
+                <td class="p-3 text-center font-bold">${registro.cantidadFisica}</td>
+                <td class="p-3 text-center">${registro.stockSicar ?? '--'}</td>
+                <td class="p-3 text-center font-bold ${diferencia === 0 ? 'text-emerald-600' : diferencia == null ? 'text-gray-400' : 'text-red-600'}">${formatearDiferencia(diferencia)}</td>
+                <td class="p-3"><span class="px-2 py-1 rounded-full text-[10px] font-bold uppercase ${registro.estado === 'COMPLETADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">${registro.estado === 'COMPLETADO' ? 'Validado' : 'Pendiente'}</span></td>
+            </tr>`;
+    }).join('') : '<tr><td colspan="8" class="p-6 text-center text-xs text-gray-400">No hay capturas registradas.</td></tr>';
+
+    const participantesHtml = participantes.length
+        ? participantes.map(p => `<span class="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-1 rounded-full text-[10px] font-semibold"><i class="fa-solid fa-user"></i>${escaparHtml(p.nombre)} · ${p.conteos}</span>`).join(' ')
+        : '<span class="text-xs text-gray-400">Sin participantes registrados.</span>';
+
+    contenido.innerHTML = `
+        <div class="flex flex-wrap justify-between gap-3 items-start border-b pb-4">
+            <div>
+                <div class="text-[10px] uppercase font-bold text-amber-600">Inventario finalizado</div>
+                <h3 class="text-lg font-bold text-slate-900">${escaparHtml(sesion?.nombre || 'Inventario')}</h3>
+                <div class="text-xs text-gray-400 mt-1">${formatearFecha(sesion?.fechaInicio)} → ${formatearFecha(sesion?.fechaFin)}</div>
+            </div>
+            <button type="button" onclick="cerrarDetalleInventario()" class="text-gray-400 hover:text-slate-700"><i class="fa-solid fa-xmark text-lg"></i></button>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-2">
+            <div class="bg-slate-50 rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-gray-400">Contados</div><div class="text-xl font-bold">${resumen.totalCapturas || 0}</div></div>
+            <div class="bg-emerald-50 rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-emerald-600">Validados</div><div class="text-xl font-bold text-emerald-700">${resumen.validadas || 0}</div></div>
+            <div class="bg-amber-50 rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-amber-600">Pendientes</div><div class="text-xl font-bold text-amber-700">${resumen.pendientes || 0}</div></div>
+            <div class="bg-red-50 rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-red-500">Con diferencia</div><div class="text-xl font-bold text-red-600">${resumen.conDiferencia || 0}</div></div>
+            <div class="bg-emerald-50 rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-emerald-600">Sin diferencia</div><div class="text-xl font-bold text-emerald-700">${resumen.sinDiferencia || 0}</div></div>
+            <div class="bg-red-50 rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-red-500">Unid. faltantes</div><div class="text-xl font-bold text-red-600">${resumen.unidadesFaltantes || 0}</div></div>
+            <div class="bg-indigo-50 rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-indigo-500">Unid. sobrantes</div><div class="text-xl font-bold text-indigo-700">${resumen.unidadesSobrantes || 0}</div></div>
+            <div class="bg-slate-900 text-white rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-slate-400">Balance</div><div class="text-xl font-bold">${formatearBalanceUnidades(resumen.balanceUnidades)}</div></div>
+        </div>
+
+        <div class="bg-slate-50 border rounded-xl p-3">
+            <div class="text-[10px] uppercase font-bold text-gray-400 mb-2">Participantes</div>
+            <div class="flex flex-wrap gap-1.5">${participantesHtml}</div>
+        </div>
+
+        <div>
+            <h4 class="font-bold text-slate-900 text-sm mb-2"><i class="fa-solid fa-calendar-days text-amber-500 me-1"></i> Actividad por día</h4>
+            <div class="overflow-x-auto border rounded-xl">
+                <table class="w-full text-left min-w-[720px] text-xs">
+                    <thead><tr class="bg-slate-50 text-gray-500 uppercase"><th class="p-3">Fecha</th><th class="p-3 text-center">Contados</th><th class="p-3 text-center">Validados</th><th class="p-3 text-center">Pendientes</th><th class="p-3 text-center">Diferencias</th><th class="p-3 text-center">Balance</th></tr></thead>
+                    <tbody>${filasDias}</tbody>
+                </table>
+            </div>
+        </div>
+
+        <div>
+            <h4 class="font-bold text-slate-900 text-sm mb-2"><i class="fa-solid fa-list-check text-amber-500 me-1"></i> Detalle de productos</h4>
+            <div class="overflow-x-auto border rounded-xl max-h-[430px] overflow-y-auto">
+                <table class="w-full text-left min-w-[1050px] text-xs">
+                    <thead class="sticky top-0 bg-slate-50"><tr class="text-gray-500 uppercase"><th class="p-3">Fecha y hora</th><th class="p-3">Código</th><th class="p-3">Producto</th><th class="p-3">Contado por</th><th class="p-3 text-center">Físico</th><th class="p-3 text-center">SICAR</th><th class="p-3 text-center">Diferencia</th><th class="p-3">Estado</th></tr></thead>
+                    <tbody>${filasDetalle}</tbody>
+                </table>
+            </div>
+        </div>`;
 }
 
 async function cargarDatosIniciales() {
@@ -270,11 +550,13 @@ function cambiarSubTabEmp(tab) {
 function cambiarTabAdmin(tab) {
     const tabs = {
         'en-vivo': document.getElementById('tab-vivo'),
+        'historial': document.getElementById('tab-historial'),
         'mapeo': document.getElementById('tab-mapeo'),
         'usuarios': document.getElementById('tab-usuarios')
     };
     const botones = {
         'en-vivo': document.getElementById('tab-btn-vivo'),
+        'historial': document.getElementById('tab-btn-historial'),
         'mapeo': document.getElementById('tab-btn-mapeo'),
         'usuarios': document.getElementById('tab-btn-usuarios')
     };
@@ -301,6 +583,8 @@ function cambiarTabAdmin(tab) {
     detenerCamaraAdmin();
     if (tab === 'usuarios') {
         cargarUsuariosAdmin({ silencioso: usuariosAdmin.length > 0 });
+    } else if (tab === 'historial') {
+        cargarHistorialInventarios({ silencioso: historialInventariosAdmin.length > 0 });
     } else {
         cargarCapturasDesdeBD({ silencioso: true });
     }
@@ -680,6 +964,11 @@ async function simularEscaneo(codigo) {
 
 async function registrarConteo(event) {
     event.preventDefault();
+
+    if (!sesionInventarioActiva?.id) {
+        mostrarToast('No hay un inventario activo. Solicita a un administrador que inicie uno.', 'error');
+        return;
+    }
 
     const codigoInput = document.getElementById('codigo-input');
     const cantidadInput = document.getElementById('cantidad-input');
@@ -1285,8 +1574,9 @@ function procesarEventoInventarioTiempoReal(evento) {
         return;
     }
 
-    if (tipo === 'sesion_nueva') {
+    if (tipo === 'sesion_nueva' || tipo === 'sesion_finalizada') {
         programarSincronizacionTiempoReal({ sesion: true, capturas: true });
+        if (usuarioActualEsAdmin()) cargarHistorialInventarios({ silencioso: true });
         return;
     }
 
@@ -1376,6 +1666,8 @@ async function inicializarAplicacionProtegida() {
     productosDia = [];
     capturas = [];
     usuariosAdmin = [];
+    historialInventariosAdmin = [];
+    detalleInventarioAdmin = null;
     passwordTemporalActual = '';
     borradoresSicar.clear();
     sesionInventarioActiva = null;

@@ -165,6 +165,21 @@ function apiIniciarNuevaSesion(nombre = '') {
     });
 }
 
+function apiFinalizarSesionInventario(forzar = false) {
+    return apiRequest('/sesiones/activa/finalizar', {
+        method: 'POST',
+        body: JSON.stringify({ forzar })
+    });
+}
+
+function apiObtenerHistorialInventarios() {
+    return apiRequest('/sesiones/historial');
+}
+
+function apiObtenerDetalleInventario(id) {
+    return apiRequest(`/sesiones/${encodeURIComponent(id)}`);
+}
+
 // ---------------- USUARIOS (ADMIN) ----------------
 function apiObtenerUsuarios() {
     return apiRequest('/usuarios');
