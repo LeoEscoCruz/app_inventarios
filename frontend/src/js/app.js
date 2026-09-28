@@ -19,6 +19,8 @@ let passwordTemporalActual = '';
 let historialInventariosAdmin = [];
 let detalleInventarioAdmin = null;
 let cargandoHistorialAdmin = false;
+let filtrosHistorialAdmin = { desde: '', hasta: '' };
+let filtrosDetalleHistorialAdmin = { desde: '', hasta: '', departamento: '', zona: '' };
 // Conserva lo que el administrador está escribiendo en SICAR aunque llegue un refresco en vivo.
 const borradoresSicar = new Map();
 
@@ -296,9 +298,58 @@ function formatoFechaSoloDia(fechaISO) {
     });
 }
 
+function claveFechaMonterrey(fecha) {
+    if (!fecha) return '';
+    const d = new Date(fecha);
+    if (Number.isNaN(d.getTime())) return '';
+
+    const partes = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Monterrey',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(d);
+    const valores = Object.fromEntries(partes.map(parte => [parte.type, parte.value]));
+    return `${valores.year}-${valores.month}-${valores.day}`;
+}
+
 function formatearBalanceUnidades(valor) {
     const numero = Number(valor || 0);
     return numero > 0 ? `+${numero}` : String(numero);
+}
+
+function normalizarTextoFiltro(valor) {
+    return String(valor || '').trim().toLocaleLowerCase('es-MX');
+}
+
+function actualizarFiltrosHistorial() {
+    filtrosHistorialAdmin = {
+        desde: document.getElementById('historial-filtro-desde')?.value || '',
+        hasta: document.getElementById('historial-filtro-hasta')?.value || ''
+    };
+    renderizarHistorialInventarios();
+}
+
+function limpiarFiltrosHistorial() {
+    filtrosHistorialAdmin = { desde: '', hasta: '' };
+    const desde = document.getElementById('historial-filtro-desde');
+    const hasta = document.getElementById('historial-filtro-hasta');
+    if (desde) desde.value = '';
+    if (hasta) hasta.value = '';
+    renderizarHistorialInventarios();
+}
+
+function sesionesHistorialFiltradas() {
+    const { desde, hasta } = filtrosHistorialAdmin;
+    if (!desde && !hasta) return historialInventariosAdmin;
+
+    return historialInventariosAdmin.filter(sesion => {
+        const inicio = claveFechaMonterrey(sesion.fechaInicio);
+        const fin = claveFechaMonterrey(sesion.fechaFin || sesion.fechaInicio);
+        if (desde && fin && fin < desde) return false;
+        if (hasta && inicio && inicio > hasta) return false;
+        return true;
+    });
 }
 
 async function cargarHistorialInventarios({ silencioso = false } = {}) {
@@ -329,6 +380,14 @@ function renderizarHistorialInventarios() {
     const contenedor = document.getElementById('historial-lista');
     if (!contenedor) return;
 
+    const sesiones = sesionesHistorialFiltradas();
+    const contador = document.getElementById('historial-filtro-contador');
+    if (contador) {
+        contador.textContent = filtrosHistorialAdmin.desde || filtrosHistorialAdmin.hasta
+            ? `${sesiones.length} de ${historialInventariosAdmin.length} inventarios`
+            : `${historialInventariosAdmin.length} inventarios`;
+    }
+
     if (!historialInventariosAdmin.length) {
         contenedor.innerHTML = `
             <div class="p-10 text-center text-gray-400">
@@ -339,7 +398,17 @@ function renderizarHistorialInventarios() {
         return;
     }
 
-    contenedor.innerHTML = historialInventariosAdmin.map(sesion => {
+    if (!sesiones.length) {
+        contenedor.innerHTML = `
+            <div class="bg-white border rounded-xl p-8 text-center text-gray-400">
+                <i class="fa-solid fa-filter-circle-xmark text-2xl mb-2"></i>
+                <div class="text-sm font-bold text-slate-600">No hay inventarios en ese rango de fechas</div>
+                <div class="text-xs mt-1">Cambia las fechas o limpia los filtros para volver a mostrar todo el historial.</div>
+            </div>`;
+        return;
+    }
+
+    contenedor.innerHTML = sesiones.map(sesion => {
         const r = sesion.resumen || {};
         return `
             <article class="bg-white border rounded-xl shadow-sm p-4 hover:border-amber-300 transition">
@@ -377,6 +446,7 @@ async function abrirDetalleInventario(id) {
     try {
         const respuesta = await apiObtenerDetalleInventario(id);
         detalleInventarioAdmin = respuesta?.data || null;
+        filtrosDetalleHistorialAdmin = { desde: '', hasta: '', departamento: '', zona: '' };
         renderizarDetalleInventario();
         panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (error) {
@@ -387,15 +457,350 @@ async function abrirDetalleInventario(id) {
 
 function cerrarDetalleInventario() {
     detalleInventarioAdmin = null;
+    filtrosDetalleHistorialAdmin = { desde: '', hasta: '', departamento: '', zona: '' };
     document.getElementById('historial-detalle')?.classList.add('hidden');
+}
+
+function valorDepartamentoRegistro(registro) {
+    return String(registro?.producto?.categoria || 'General').trim() || 'General';
+}
+
+function valorZonaRegistro(registro) {
+    return String(registro?.seccionCapturada || registro?.producto?.seccion || 'General').trim() || 'General';
+}
+
+function leerFiltrosDetalleHistorial() {
+    filtrosDetalleHistorialAdmin = {
+        desde: document.getElementById('detalle-filtro-desde')?.value || '',
+        hasta: document.getElementById('detalle-filtro-hasta')?.value || '',
+        departamento: document.getElementById('detalle-filtro-departamento')?.value || '',
+        zona: document.getElementById('detalle-filtro-zona')?.value || ''
+    };
+}
+
+function aplicarFiltrosDetalleHistorial() {
+    leerFiltrosDetalleHistorial();
+    renderizarDetalleInventario();
+}
+
+function limpiarFiltrosDetalleHistorial() {
+    filtrosDetalleHistorialAdmin = { desde: '', hasta: '', departamento: '', zona: '' };
+    renderizarDetalleInventario();
+}
+
+function obtenerRegistrosDetalleFiltrados() {
+    const registros = Array.isArray(detalleInventarioAdmin?.capturas) ? detalleInventarioAdmin.capturas : [];
+    const { desde, hasta, departamento, zona } = filtrosDetalleHistorialAdmin;
+    const deptoNormalizado = normalizarTextoFiltro(departamento);
+    const zonaNormalizada = normalizarTextoFiltro(zona);
+
+    return registros.filter(registro => {
+        const fecha = claveFechaMonterrey(registro.createdAt);
+        if (desde && fecha && fecha < desde) return false;
+        if (hasta && fecha && fecha > hasta) return false;
+        if (deptoNormalizado && normalizarTextoFiltro(valorDepartamentoRegistro(registro)) !== deptoNormalizado) return false;
+        if (zonaNormalizada && normalizarTextoFiltro(valorZonaRegistro(registro)) !== zonaNormalizada) return false;
+        return true;
+    });
+}
+
+function construirResumenRegistrosFrontend(registros = []) {
+    const resumen = {
+        totalCapturas: registros.length,
+        pendientes: 0,
+        validadas: 0,
+        sinDiferencia: 0,
+        conDiferencia: 0,
+        productosFaltantes: 0,
+        productosSobrantes: 0,
+        unidadesFaltantes: 0,
+        unidadesSobrantes: 0,
+        balanceUnidades: 0,
+        participantes: []
+    };
+    const participantes = new Map();
+
+    registros.forEach(registro => {
+        const completado = registro.estado === 'COMPLETADO';
+        if (completado) resumen.validadas += 1;
+        else resumen.pendientes += 1;
+
+        if (completado && Number.isInteger(registro.diferencia)) {
+            const diferencia = registro.diferencia;
+            resumen.balanceUnidades += diferencia;
+            if (diferencia === 0) resumen.sinDiferencia += 1;
+            if (diferencia < 0) {
+                resumen.conDiferencia += 1;
+                resumen.productosFaltantes += 1;
+                resumen.unidadesFaltantes += Math.abs(diferencia);
+            }
+            if (diferencia > 0) {
+                resumen.conDiferencia += 1;
+                resumen.productosSobrantes += 1;
+                resumen.unidadesSobrantes += diferencia;
+            }
+        }
+
+        const usuario = registro.usuario;
+        const clave = usuario?.id || usuario?.username || usuario?.nombre || 'sin-identificar';
+        if (!participantes.has(clave)) {
+            participantes.set(clave, {
+                nombre: usuario?.nombre || usuario?.username || 'Sin identificar',
+                conteos: 0
+            });
+        }
+        participantes.get(clave).conteos += 1;
+    });
+
+    resumen.participantes = [...participantes.values()]
+        .sort((a, b) => b.conteos - a.conteos || a.nombre.localeCompare(b.nombre, 'es'));
+    return resumen;
+}
+
+function construirResumenDiasFrontend(registros = []) {
+    const dias = new Map();
+    registros.forEach(registro => {
+        const fecha = claveFechaMonterrey(registro.createdAt);
+        if (!fecha) return;
+        if (!dias.has(fecha)) dias.set(fecha, { fecha, registros: [] });
+        dias.get(fecha).registros.push(registro);
+    });
+
+    return [...dias.values()]
+        .sort((a, b) => a.fecha.localeCompare(b.fecha))
+        .map(dia => ({ fecha: dia.fecha, ...construirResumenRegistrosFrontend(dia.registros) }));
+}
+
+function opcionesSelectHistorial(valores, seleccionado, etiquetaTodos) {
+    const unicos = [...new Set(valores.map(v => String(v || '').trim()).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+    return [
+        `<option value="">${escaparHtml(etiquetaTodos)}</option>`,
+        ...unicos.map(valor => `<option value="${escaparHtml(valor)}" ${valor === seleccionado ? 'selected' : ''}>${escaparHtml(valor)}</option>`)
+    ].join('');
+}
+
+function descripcionFiltrosReporte() {
+    const f = filtrosDetalleHistorialAdmin;
+    const partes = [];
+    if (f.desde) partes.push(`Desde: ${f.desde}`);
+    if (f.hasta) partes.push(`Hasta: ${f.hasta}`);
+    if (f.departamento) partes.push(`Departamento: ${f.departamento}`);
+    if (f.zona) partes.push(`Zona: ${f.zona}`);
+    return partes.length ? partes.join(' | ') : 'Sin filtros (inventario completo)';
+}
+
+function nombreArchivoSeguro(nombre) {
+    return String(nombre || 'inventario')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 70) || 'inventario';
+}
+
+function datosDetalleParaReporte(registros) {
+    return registros.map(registro => ({
+        'Fecha y hora': formatearFecha(registro.createdAt),
+        'Código': registro.producto?.codigo || '',
+        'Producto': registro.producto?.nombre || '',
+        'Departamento': valorDepartamentoRegistro(registro),
+        'Zona': valorZonaRegistro(registro),
+        'Contado por': registro.usuario?.nombre || registro.usuario?.username || 'Sin identificar',
+        'Físico': registro.cantidadFisica,
+        'SICAR': registro.stockSicar ?? '',
+        'Diferencia': registro.diferencia ?? '',
+        'Estado': registro.estado === 'COMPLETADO' ? 'Validado' : 'Pendiente'
+    }));
+}
+
+function exportarInventarioExcel() {
+    if (!detalleInventarioAdmin) return;
+    if (!window.XLSX) {
+        mostrarToast('No se pudo cargar el componente de exportación Excel', 'error');
+        return;
+    }
+
+    const registros = obtenerRegistrosDetalleFiltrados();
+    if (!registros.length) {
+        mostrarToast('No hay registros para exportar con los filtros actuales', 'error');
+        return;
+    }
+
+    const { sesion } = detalleInventarioAdmin;
+    const resumen = construirResumenRegistrosFrontend(registros);
+    const dias = construirResumenDiasFrontend(registros);
+    const wb = XLSX.utils.book_new();
+
+    const resumenRows = [
+        ['REPORTE DE AUDITORÍA DE INVENTARIO'],
+        ['Inventario', sesion?.nombre || 'Inventario'],
+        ['Inicio', formatearFecha(sesion?.fechaInicio)],
+        ['Finalización', formatearFecha(sesion?.fechaFin)],
+        ['Filtros', descripcionFiltrosReporte()],
+        [],
+        ['Indicador', 'Resultado'],
+        ['Productos contados', resumen.totalCapturas],
+        ['Validados', resumen.validadas],
+        ['Pendientes', resumen.pendientes],
+        ['Sin diferencia', resumen.sinDiferencia],
+        ['Con diferencia', resumen.conDiferencia],
+        ['Productos faltantes', resumen.productosFaltantes],
+        ['Productos sobrantes', resumen.productosSobrantes],
+        ['Unidades faltantes', resumen.unidadesFaltantes],
+        ['Unidades sobrantes', resumen.unidadesSobrantes],
+        ['Balance de unidades', resumen.balanceUnidades]
+    ];
+    const wsResumen = XLSX.utils.aoa_to_sheet(resumenRows);
+    wsResumen['!cols'] = [{ wch: 28 }, { wch: 55 }];
+    XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen');
+
+    const detalle = datosDetalleParaReporte(registros);
+    const wsDetalle = XLSX.utils.json_to_sheet(detalle);
+    wsDetalle['!cols'] = [
+        { wch: 20 }, { wch: 18 }, { wch: 42 }, { wch: 24 }, { wch: 24 },
+        { wch: 24 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }
+    ];
+    XLSX.utils.book_append_sheet(wb, wsDetalle, 'Detalle');
+
+    const actividad = dias.map(dia => ({
+        'Fecha': dia.fecha,
+        'Contados': dia.totalCapturas,
+        'Validados': dia.validadas,
+        'Pendientes': dia.pendientes,
+        'Con diferencia': dia.conDiferencia,
+        'Unidades faltantes': dia.unidadesFaltantes,
+        'Unidades sobrantes': dia.unidadesSobrantes,
+        'Balance': dia.balanceUnidades
+    }));
+    const wsActividad = XLSX.utils.json_to_sheet(actividad);
+    wsActividad['!cols'] = Array(8).fill({ wch: 18 });
+    XLSX.utils.book_append_sheet(wb, wsActividad, 'Actividad diaria');
+
+    const participantes = resumen.participantes.map(p => ({
+        'Participante': p.nombre,
+        'Conteos': p.conteos
+    }));
+    const wsParticipantes = XLSX.utils.json_to_sheet(participantes);
+    wsParticipantes['!cols'] = [{ wch: 35 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, wsParticipantes, 'Participantes');
+
+    const diferencias = datosDetalleParaReporte(registros.filter(r => r.estado === 'COMPLETADO' && Number.isInteger(r.diferencia) && r.diferencia !== 0));
+    const wsDiferencias = XLSX.utils.json_to_sheet(diferencias.length ? diferencias : [{ 'Resultado': 'Sin diferencias en los filtros seleccionados' }]);
+    wsDiferencias['!cols'] = wsDetalle['!cols'];
+    XLSX.utils.book_append_sheet(wb, wsDiferencias, 'Diferencias');
+
+    const archivo = `${nombreArchivoSeguro(sesion?.nombre)}_${claveFechaMonterrey(sesion?.fechaFin || new Date())}.xlsx`;
+    XLSX.writeFile(wb, archivo);
+    mostrarToast('Reporte Excel generado correctamente');
+}
+
+function exportarInventarioPdf() {
+    if (!detalleInventarioAdmin) return;
+    const JsPDF = window.jspdf?.jsPDF;
+    if (!JsPDF) {
+        mostrarToast('No se pudo cargar el componente de exportación PDF', 'error');
+        return;
+    }
+
+    const registros = obtenerRegistrosDetalleFiltrados();
+    if (!registros.length) {
+        mostrarToast('No hay registros para exportar con los filtros actuales', 'error');
+        return;
+    }
+
+    const { sesion } = detalleInventarioAdmin;
+    const resumen = construirResumenRegistrosFrontend(registros);
+    const doc = new JsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text('Reporte de Auditoría de Inventario', 14, 14);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.text(`Inventario: ${sesion?.nombre || 'Inventario'}`, 14, 21);
+    doc.text(`Periodo: ${formatearFecha(sesion?.fechaInicio)} - ${formatearFecha(sesion?.fechaFin)}`, 14, 26);
+    doc.text(`Filtros: ${descripcionFiltrosReporte()}`, 14, 31, { maxWidth: 265 });
+
+    const resumenBody = [
+        ['Contados', resumen.totalCapturas, 'Validados', resumen.validadas, 'Pendientes', resumen.pendientes],
+        ['Sin diferencia', resumen.sinDiferencia, 'Con diferencia', resumen.conDiferencia, 'Balance', resumen.balanceUnidades],
+        ['Unid. faltantes', resumen.unidadesFaltantes, 'Unid. sobrantes', resumen.unidadesSobrantes, 'Participantes', resumen.participantes.length]
+    ];
+
+    if (typeof doc.autoTable !== 'function') {
+        mostrarToast('No se pudo cargar la tabla para exportación PDF', 'error');
+        return;
+    }
+
+    doc.autoTable({
+        startY: 37,
+        body: resumenBody,
+        theme: 'grid',
+        styles: { fontSize: 8, cellPadding: 2 },
+        columnStyles: {
+            0: { fontStyle: 'bold' }, 2: { fontStyle: 'bold' }, 4: { fontStyle: 'bold' }
+        }
+    });
+
+    const body = registros.map(registro => [
+        formatearFecha(registro.createdAt),
+        registro.producto?.codigo || '',
+        registro.producto?.nombre || '',
+        valorDepartamentoRegistro(registro),
+        valorZonaRegistro(registro),
+        registro.usuario?.nombre || registro.usuario?.username || 'Sin identificar',
+        String(registro.cantidadFisica),
+        registro.stockSicar ?? '--',
+        registro.diferencia == null ? '--' : formatearDiferencia(registro.diferencia),
+        registro.estado === 'COMPLETADO' ? 'Validado' : 'Pendiente'
+    ]);
+
+    doc.autoTable({
+        startY: doc.lastAutoTable.finalY + 5,
+        head: [['Fecha', 'Código', 'Producto', 'Departamento', 'Zona', 'Contado por', 'Físico', 'SICAR', 'Dif.', 'Estado']],
+        body,
+        theme: 'striped',
+        styles: { fontSize: 6.8, cellPadding: 1.4, overflow: 'linebreak' },
+        headStyles: { fontStyle: 'bold' },
+        columnStyles: {
+            0: { cellWidth: 24 },
+            1: { cellWidth: 23 },
+            2: { cellWidth: 47 },
+            3: { cellWidth: 30 },
+            4: { cellWidth: 30 },
+            5: { cellWidth: 30 },
+            6: { cellWidth: 12, halign: 'center' },
+            7: { cellWidth: 12, halign: 'center' },
+            8: { cellWidth: 12, halign: 'center' },
+            9: { cellWidth: 16 }
+        },
+        didDrawPage: data => {
+            const pagina = doc.internal.getNumberOfPages();
+            doc.setFontSize(7);
+            doc.setTextColor(120);
+            doc.text(`La Flor de México · Página ${pagina}`, 282, 202, { align: 'right' });
+            doc.setTextColor(0);
+        }
+    });
+
+    const archivo = `${nombreArchivoSeguro(sesion?.nombre)}_${claveFechaMonterrey(sesion?.fechaFin || new Date())}.pdf`;
+    doc.save(archivo);
+    mostrarToast('Reporte PDF generado correctamente');
 }
 
 function renderizarDetalleInventario() {
     const contenido = document.getElementById('historial-detalle-contenido');
     if (!contenido || !detalleInventarioAdmin) return;
 
-    const { sesion, resumen = {}, dias = [], capturas: registros = [] } = detalleInventarioAdmin;
-    const participantes = Array.isArray(resumen.participantes) ? resumen.participantes : [];
+    const { sesion, capturas: todosRegistros = [] } = detalleInventarioAdmin;
+    const registros = obtenerRegistrosDetalleFiltrados();
+    const resumen = construirResumenRegistrosFrontend(registros);
+    const dias = construirResumenDiasFrontend(registros);
+    const participantes = resumen.participantes;
+
+    const departamentos = todosRegistros.map(valorDepartamentoRegistro);
+    const zonasDetalle = todosRegistros.map(valorZonaRegistro);
 
     const filasDias = dias.length ? dias.map(dia => `
         <tr class="border-b last:border-0">
@@ -405,27 +810,38 @@ function renderizarDetalleInventario() {
             <td class="p-3 text-center text-amber-700 font-bold">${dia.pendientes || 0}</td>
             <td class="p-3 text-center text-red-600 font-bold">${dia.conDiferencia || 0}</td>
             <td class="p-3 text-center font-bold">${formatearBalanceUnidades(dia.balanceUnidades)}</td>
-        </tr>`).join('') : '<tr><td colspan="6" class="p-6 text-center text-xs text-gray-400">No hubo capturas en este inventario.</td></tr>';
+        </tr>`).join('') : '<tr><td colspan="6" class="p-6 text-center text-xs text-gray-400">No hay actividad con los filtros seleccionados.</td></tr>';
 
     const filasDetalle = registros.length ? registros.map(registro => {
         const diferencia = registro.diferencia;
         const usuario = registro.usuario?.nombre || registro.usuario?.username || 'Sin identificar';
+        const codigo = registro.producto?.codigo || '--';
         return `
             <tr class="border-b last:border-0">
                 <td class="p-3 text-xs whitespace-nowrap">${formatearFecha(registro.createdAt)}</td>
-                <td class="p-3 font-mono text-xs">${escaparHtml(registro.producto?.codigo || '--')}</td>
+                <td class="p-3 text-xs">
+                    <div class="flex items-center gap-1.5">
+                        <span class="font-mono">${escaparHtml(codigo)}</span>
+                        <button type="button" data-code="${escaparHtml(codigo)}" onclick="copiarCodigoDesdeBoton(this)"
+                                class="text-gray-400 hover:text-amber-600" title="Copiar código">
+                            <i class="fa-regular fa-copy"></i>
+                        </button>
+                    </div>
+                </td>
                 <td class="p-3 font-semibold">${escaparHtml(registro.producto?.nombre || 'Producto')}</td>
+                <td class="p-3">${escaparHtml(valorDepartamentoRegistro(registro))}</td>
+                <td class="p-3">${escaparHtml(valorZonaRegistro(registro))}</td>
                 <td class="p-3">${escaparHtml(usuario)}</td>
                 <td class="p-3 text-center font-bold">${registro.cantidadFisica}</td>
                 <td class="p-3 text-center">${registro.stockSicar ?? '--'}</td>
                 <td class="p-3 text-center font-bold ${diferencia === 0 ? 'text-emerald-600' : diferencia == null ? 'text-gray-400' : 'text-red-600'}">${formatearDiferencia(diferencia)}</td>
                 <td class="p-3"><span class="px-2 py-1 rounded-full text-[10px] font-bold uppercase ${registro.estado === 'COMPLETADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">${registro.estado === 'COMPLETADO' ? 'Validado' : 'Pendiente'}</span></td>
             </tr>`;
-    }).join('') : '<tr><td colspan="8" class="p-6 text-center text-xs text-gray-400">No hay capturas registradas.</td></tr>';
+    }).join('') : '<tr><td colspan="10" class="p-6 text-center text-xs text-gray-400">No hay capturas que coincidan con los filtros seleccionados.</td></tr>';
 
     const participantesHtml = participantes.length
         ? participantes.map(p => `<span class="inline-flex items-center gap-1 bg-slate-100 text-slate-700 px-2 py-1 rounded-full text-[10px] font-semibold"><i class="fa-solid fa-user"></i>${escaparHtml(p.nombre)} · ${p.conteos}</span>`).join(' ')
-        : '<span class="text-xs text-gray-400">Sin participantes registrados.</span>';
+        : '<span class="text-xs text-gray-400">Sin participantes en los filtros seleccionados.</span>';
 
     contenido.innerHTML = `
         <div class="flex flex-wrap justify-between gap-3 items-start border-b pb-4">
@@ -434,7 +850,60 @@ function renderizarDetalleInventario() {
                 <h3 class="text-lg font-bold text-slate-900">${escaparHtml(sesion?.nombre || 'Inventario')}</h3>
                 <div class="text-xs text-gray-400 mt-1">${formatearFecha(sesion?.fechaInicio)} → ${formatearFecha(sesion?.fechaFin)}</div>
             </div>
-            <button type="button" onclick="cerrarDetalleInventario()" class="text-gray-400 hover:text-slate-700"><i class="fa-solid fa-xmark text-lg"></i></button>
+            <div class="flex items-center gap-2 flex-wrap justify-end">
+                <button type="button" onclick="exportarInventarioExcel()"
+                        class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-2 rounded-lg text-xs shadow whitespace-nowrap">
+                    <i class="fa-solid fa-file-excel me-1"></i> Exportar Excel
+                </button>
+                <button type="button" onclick="exportarInventarioPdf()"
+                        class="bg-red-600 hover:bg-red-500 text-white font-bold px-3 py-2 rounded-lg text-xs shadow whitespace-nowrap">
+                    <i class="fa-solid fa-file-pdf me-1"></i> Exportar PDF
+                </button>
+                <button type="button" onclick="cerrarDetalleInventario()" class="text-gray-400 hover:text-slate-700 px-2" title="Cerrar detalle"><i class="fa-solid fa-xmark text-lg"></i></button>
+            </div>
+        </div>
+
+        <div class="bg-slate-50 border rounded-xl p-4 space-y-3">
+            <div class="flex flex-wrap justify-between gap-2 items-center">
+                <div>
+                    <div class="text-[10px] uppercase font-bold text-gray-400">Filtros del reporte</div>
+                    <div class="text-xs text-slate-600">Fecha de conteo, departamento SICAR y zona física.</div>
+                </div>
+                <div class="text-[11px] font-bold text-slate-500">${registros.length} de ${todosRegistros.length} registros</div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 mb-1">Desde</label>
+                    <input id="detalle-filtro-desde" type="date" value="${escaparHtml(filtrosDetalleHistorialAdmin.desde)}"
+                           onchange="aplicarFiltrosDetalleHistorial()" class="w-full border rounded-lg p-2 text-xs bg-white outline-none focus:ring-2 focus:ring-amber-500">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 mb-1">Hasta</label>
+                    <input id="detalle-filtro-hasta" type="date" value="${escaparHtml(filtrosDetalleHistorialAdmin.hasta)}"
+                           onchange="aplicarFiltrosDetalleHistorial()" class="w-full border rounded-lg p-2 text-xs bg-white outline-none focus:ring-2 focus:ring-amber-500">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 mb-1">Departamento</label>
+                    <select id="detalle-filtro-departamento" onchange="aplicarFiltrosDetalleHistorial()"
+                            class="w-full border rounded-lg p-2 text-xs bg-white outline-none focus:ring-2 focus:ring-amber-500">
+                        ${opcionesSelectHistorial(departamentos, filtrosDetalleHistorialAdmin.departamento, 'Todos los departamentos')}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 mb-1">Zona física</label>
+                    <select id="detalle-filtro-zona" onchange="aplicarFiltrosDetalleHistorial()"
+                            class="w-full border rounded-lg p-2 text-xs bg-white outline-none focus:ring-2 focus:ring-amber-500">
+                        ${opcionesSelectHistorial(zonasDetalle, filtrosDetalleHistorialAdmin.zona, 'Todas las zonas')}
+                    </select>
+                </div>
+                <div class="flex items-end">
+                    <button type="button" onclick="limpiarFiltrosDetalleHistorial()"
+                            class="w-full border bg-white hover:bg-slate-100 text-slate-700 font-bold rounded-lg p-2 text-xs">
+                        <i class="fa-solid fa-filter-circle-xmark me-1"></i> Limpiar filtros
+                    </button>
+                </div>
+            </div>
+            <div class="text-[10px] text-gray-400"><i class="fa-solid fa-circle-info me-1"></i>Las exportaciones Excel y PDF respetan los filtros seleccionados.</div>
         </div>
 
         <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-2">
@@ -466,8 +935,8 @@ function renderizarDetalleInventario() {
         <div>
             <h4 class="font-bold text-slate-900 text-sm mb-2"><i class="fa-solid fa-list-check text-amber-500 me-1"></i> Detalle de productos</h4>
             <div class="overflow-x-auto border rounded-xl max-h-[430px] overflow-y-auto">
-                <table class="w-full text-left min-w-[1050px] text-xs">
-                    <thead class="sticky top-0 bg-slate-50"><tr class="text-gray-500 uppercase"><th class="p-3">Fecha y hora</th><th class="p-3">Código</th><th class="p-3">Producto</th><th class="p-3">Contado por</th><th class="p-3 text-center">Físico</th><th class="p-3 text-center">SICAR</th><th class="p-3 text-center">Diferencia</th><th class="p-3">Estado</th></tr></thead>
+                <table class="w-full text-left min-w-[1350px] text-xs">
+                    <thead class="sticky top-0 bg-slate-50"><tr class="text-gray-500 uppercase"><th class="p-3">Fecha y hora</th><th class="p-3">Código</th><th class="p-3">Producto</th><th class="p-3">Departamento</th><th class="p-3">Zona</th><th class="p-3">Contado por</th><th class="p-3 text-center">Físico</th><th class="p-3 text-center">SICAR</th><th class="p-3 text-center">Diferencia</th><th class="p-3">Estado</th></tr></thead>
                     <tbody>${filasDetalle}</tbody>
                 </table>
             </div>
@@ -1192,7 +1661,15 @@ function htmlFilaCaptura(c) {
     return `
         <tr data-captura-id="${escaparHtml(c.id)}" class="hover:bg-slate-50">
             <td class="p-3 text-xs whitespace-nowrap">${formatearFecha(c.fechahora)}</td>
-            <td class="p-3 font-mono text-xs">${escaparHtml(c.codigo)}</td>
+            <td class="p-3 text-xs">
+                <div class="flex items-center gap-1.5">
+                    <span class="font-mono">${escaparHtml(c.codigo)}</span>
+                    <button type="button" data-code="${escaparHtml(c.codigo)}" onclick="copiarCodigoDesdeBoton(this)"
+                            class="text-gray-400 hover:text-amber-600" title="Copiar código para consultar en SICAR">
+                        <i class="fa-regular fa-copy"></i>
+                    </button>
+                </div>
+            </td>
             <td class="p-3 font-semibold">${escaparHtml(c.producto)}</td>
             <td class="p-3 whitespace-nowrap">
                 <div class="font-semibold text-slate-800">${escaparHtml(usuarioNombre)}</div>
@@ -1513,6 +1990,39 @@ async function guardarNuevoProducto(event) {
     }
 }
 
+async function copiarTextoPortapapeles(texto) {
+    const valor = String(texto ?? '');
+    if (!valor) return false;
+
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(valor);
+            return true;
+        }
+    } catch (_) {}
+
+    try {
+        const area = document.createElement('textarea');
+        area.value = valor;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        const copiado = document.execCommand('copy');
+        area.remove();
+        return copiado;
+    } catch (_) {
+        return false;
+    }
+}
+
+async function copiarCodigoDesdeBoton(boton) {
+    const codigo = boton?.dataset?.code || '';
+    const copiado = await copiarTextoPortapapeles(codigo);
+    mostrarToast(copiado ? `Código ${codigo} copiado` : 'No fue posible copiar el código automáticamente', copiado ? 'success' : 'error');
+}
+
 function escaparHtml(valor) {
     return String(valor ?? '')
         .replaceAll('&', '&amp;')
@@ -1668,6 +2178,8 @@ async function inicializarAplicacionProtegida() {
     usuariosAdmin = [];
     historialInventariosAdmin = [];
     detalleInventarioAdmin = null;
+    filtrosHistorialAdmin = { desde: '', hasta: '' };
+    filtrosDetalleHistorialAdmin = { desde: '', hasta: '', departamento: '', zona: '' };
     passwordTemporalActual = '';
     borradoresSicar.clear();
     sesionInventarioActiva = null;

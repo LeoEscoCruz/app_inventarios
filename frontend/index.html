@@ -253,6 +253,34 @@
                     Los inventarios finalizados son de solo lectura. Las diferencias conservan la cantidad física y la existencia SICAR registradas en el momento de la validación.
                 </div>
 
+                <div class="bg-white border rounded-xl shadow-sm p-4">
+                    <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
+                        <div>
+                            <div class="text-[10px] uppercase font-bold text-gray-400">Filtrar auditorías</div>
+                            <div class="text-xs text-slate-600">Busca inventarios cuyo periodo coincida con el rango seleccionado.</div>
+                        </div>
+                        <div id="historial-filtro-contador" class="text-[11px] font-bold text-slate-500">0 inventarios</div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-500 mb-1">Desde</label>
+                            <input id="historial-filtro-desde" type="date" onchange="actualizarFiltrosHistorial()"
+                                   class="w-full border rounded-lg p-2 text-xs bg-white outline-none focus:ring-2 focus:ring-amber-500">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-500 mb-1">Hasta</label>
+                            <input id="historial-filtro-hasta" type="date" onchange="actualizarFiltrosHistorial()"
+                                   class="w-full border rounded-lg p-2 text-xs bg-white outline-none focus:ring-2 focus:ring-amber-500">
+                        </div>
+                        <div class="flex items-end">
+                            <button type="button" onclick="limpiarFiltrosHistorial()"
+                                    class="w-full border bg-slate-50 hover:bg-slate-100 text-slate-700 font-bold rounded-lg p-2 text-xs">
+                                <i class="fa-solid fa-filter-circle-xmark me-1"></i> Limpiar filtros
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="historial-lista" class="space-y-3">
                     <div class="bg-white border rounded-xl p-8 text-center text-xs text-gray-400">Abre esta sección para cargar el historial.</div>
                 </div>
@@ -592,6 +620,11 @@
         <i class="fa-solid fa-circle-check text-emerald-400 text-lg"></i>
         <span id="toast-msg" class="text-sm font-medium"></span>
     </div>
+
+    <!-- LIBRERÍAS DE EXPORTACIÓN DE REPORTES -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.4/jspdf.plugin.autotable.min.js"></script>
 
     <!-- CARGA DE SCRIPTS MODULARIZADOS -->
     <script src="src/js/scanner.js"></script>
