@@ -8,6 +8,7 @@ const productosRoutes = require('./routes/productosRoutes');
 const capturasRoutes = require('./routes/capturasRoutes');
 const sesionesInventarioRoutes = require('./routes/sesionesInventarioRoutes');
 const eventosInventarioRoutes = require('./routes/eventosInventarioRoutes');
+const zonasRoutes = require('./routes/zonasRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,7 +42,7 @@ app.use(cors({
     if (!origin || origenesPermitidos.has(origin)) return callback(null, true);
     return callback(new Error('Origen CORS no permitido'));
   },
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   maxAge: 86400
 }));
@@ -71,6 +72,7 @@ app.use('/api/productos', productosRoutes);
 app.use('/api/capturas', capturasRoutes);
 app.use('/api/sesiones', sesionesInventarioRoutes);
 app.use('/api/eventos', eventosInventarioRoutes);
+app.use('/api/zonas', zonasRoutes);
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ success: false, message: 'Ruta API no encontrada' });

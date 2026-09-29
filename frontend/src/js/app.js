@@ -1,11 +1,10 @@
-const STORAGE_ZONAS = 'laFlorMexico_zonas_v1';
-
-let zonas = cargarZonasLocales();
+let zonas = [];
 let productosDia = [];
 let capturas = [];
 let filtroActual = 'todos';
 let refrescandoCapturas = false;
 let codigoEmpleadoPreview = '';
+let codigoProductoMultiubicacionActivo = '';
 let appEventosInicializados = false;
 let intervaloRecepcion = null;
 let sesionInventarioActiva = null;
@@ -21,30 +20,28 @@ let detalleInventarioAdmin = null;
 let cargandoHistorialAdmin = false;
 let filtrosHistorialAdmin = { desde: '', hasta: '' };
 let filtrosDetalleHistorialAdmin = { desde: '', hasta: '', departamento: '', zona: '' };
-// Conserva lo que el administrador está escribiendo en SICAR aunque llegue un refresco en vivo.
+let filtroMapeoAdmin = '';
 const borradoresSicar = new Map();
 
-function cargarZonasLocales() {
-    const zonasBase = [
-        { id: 'z1', nombre: 'Pasillo #1 (Entrada)' },
-        { id: 'z2', nombre: 'Refri 1 (Lácteos)' }
-    ];
-
-    try {
-        const guardadas = JSON.parse(localStorage.getItem(STORAGE_ZONAS));
-        return Array.isArray(guardadas) && guardadas.length ? guardadas : zonasBase;
-    } catch (_) {
-        return zonasBase;
-    }
+function normalizarZona(z) {
+    return {
+        id: z.id,
+        nombre: z.nombre || 'Ubicación',
+        totalProductos: Number(z?._count?.productos || z.totalProductos || 0)
+    };
 }
 
-function guardarZonasLocales() {
-    try {
-        localStorage.setItem(STORAGE_ZONAS, JSON.stringify(zonas));
-    } catch (_) {}
+function extraerUbicacionesProducto(p) {
+    const relaciones = Array.isArray(p?.zonas) ? p.zonas : [];
+    const ubicaciones = relaciones
+        .map(rel => rel?.zona || rel)
+        .filter(z => z?.id && z?.nombre && z?.activo !== false)
+        .map(z => ({ id: z.id, nombre: z.nombre }));
+    return ubicaciones;
 }
 
 function normalizarProducto(p) {
+    const ubicaciones = extraerUbicacionesProducto(p);
     return {
         id: p.id,
         codigo: String(p.codigo || '').trim(),
@@ -52,50 +49,81 @@ function normalizarProducto(p) {
         precio: Number(p.precio || 0),
         stock: Number.isFinite(Number(p.stock)) ? Number(p.stock) : 0,
         depto: p.categoria || 'General',
-        zona: p.seccion || '',
+        zona: ubicaciones[0]?.nombre || p.seccion || '',
+        ubicaciones,
         contado: false
     };
 }
 
 function normalizarCaptura(c) {
+    const desglose = Array.isArray(c.desgloseUbicaciones) ? c.desgloseUbicaciones : [];
     return {
         id: c.id,
         fechahora: c.createdAt || c.fechahora,
         codigo: c.producto?.codigo || c.codigo || '',
+        productoId: c.producto?.id || c.productoId || '',
         producto: c.producto?.nombre || c.productoNombre || c.producto || 'Producto no identificado',
         fisico: Number(c.cantidadFisica ?? c.fisico ?? 0),
         sicar: c.stockSicar ?? c.sicar ?? null,
         diferencia: c.diferencia ?? null,
         estado: String(c.estado || 'PENDIENTE').toLowerCase(),
-        zona: c.seccionCapturada || c.zona || c.producto?.seccion || 'General',
+        zonaId: c.zonaId || c.zona?.id || null,
+        zona: c.zona?.nombre || c.seccionCapturada || c.zona || c.producto?.seccion || 'Sin ubicación',
         usuarioNombre: c.usuario?.nombre || c.usuarioNombre || c.usuario?.username || 'Sin identificar',
-        usuarioUsername: c.usuario?.username || c.usuarioUsername || ''
+        usuarioUsername: c.usuario?.username || c.usuarioUsername || '',
+        participantesConteo: Array.isArray(c.participantesConteo) ? c.participantesConteo : [],
+        desgloseUbicaciones: desglose,
+        ubicacionesHabituales: Array.isArray(c.ubicacionesHabituales) ? c.ubicacionesHabituales : [],
+        conteoCoordinado: c.conteoCoordinado || null
     };
 }
 
-function incorporarZonasDesdeProductos() {
-    let cambio = false;
-    productosDia.forEach(producto => {
-        const nombre = String(producto.zona || '').trim();
-        if (!nombre) return;
-        if (!zonas.some(z => z.nombre.toLowerCase() === nombre.toLowerCase())) {
-            zonas.push({ id: `z-${Date.now()}-${zonas.length}`, nombre });
-            cambio = true;
-        }
-    });
-    if (cambio) guardarZonasLocales();
+async function cargarZonasDesdeBD({ silencioso = false } = {}) {
+    try {
+        const respuesta = await apiObtenerZonas();
+        zonas = Array.isArray(respuesta?.data) ? respuesta.data.map(normalizarZona) : [];
+        renderizarSelectorUbicacionEmpleado();
+        renderizarMapeoAdmin();
+        return true;
+    } catch (error) {
+        console.error('Error al cargar ubicaciones:', error);
+        if (!silencioso) mostrarToast(`No se pudieron cargar las ubicaciones: ${error.message}`, 'error');
+        return false;
+    }
 }
 
 function sincronizarProductosContados() {
-    const codigosContados = new Set(capturas.map(c => c.codigo).filter(Boolean));
-    productosDia.forEach(p => { p.contado = codigosContados.has(p.codigo); });
+    const paresContados = new Set();
+    capturas.forEach(c => {
+        if (Array.isArray(c.desgloseUbicaciones) && c.desgloseUbicaciones.length) {
+            c.desgloseUbicaciones.forEach(d => {
+                if (c.codigo && d.zonaId) paresContados.add(`${c.codigo}:${d.zonaId}`);
+            });
+        } else if (c.codigo && c.zonaId) {
+            paresContados.add(`${c.codigo}:${c.zonaId}`);
+        }
+    });
+
+    productosDia.forEach(p => {
+        p.conteosPorZona = new Set((p.ubicaciones || []).filter(z => paresContados.has(`${p.codigo}:${z.id}`)).map(z => z.id));
+        p.contado = p.ubicaciones.length > 0 && p.ubicaciones.every(z => paresContados.has(`${p.codigo}:${z.id}`));
+    });
+}
+
+function productoContadoEnZona(producto, zonaId) {
+    return Boolean(producto?.codigo && zonaId && capturas.some(c => {
+        if (c.codigo !== producto.codigo) return false;
+        if (Array.isArray(c.desgloseUbicaciones) && c.desgloseUbicaciones.length) {
+            return c.desgloseUbicaciones.some(d => d.zonaId === zonaId);
+        }
+        return c.zonaId === zonaId;
+    }));
 }
 
 async function cargarProductosDesdeBD() {
     try {
         const data = await apiObtenerProductos();
         productosDia = Array.isArray(data) ? data.map(normalizarProducto) : [];
-        incorporarZonasDesdeProductos();
         sincronizarProductosContados();
         renderizarListaEmpleado();
         renderizarMapeoAdmin();
@@ -133,6 +161,7 @@ async function cargarCapturasDesdeBD({ silencioso = false } = {}) {
             else renderizarTabla();
         }
         renderizarListaEmpleado();
+        renderizarTareasCoordinadas();
     } catch (error) {
         console.error('Error al cargar capturas:', error);
         if (!silencioso) mostrarToast(`No se pudieron cargar las capturas: ${error.message}`, 'error');
@@ -465,8 +494,15 @@ function valorDepartamentoRegistro(registro) {
     return String(registro?.producto?.categoria || 'General').trim() || 'General';
 }
 
+function zonasRegistro(registro) {
+    const desglose = Array.isArray(registro?.desgloseUbicaciones) ? registro.desgloseUbicaciones : [];
+    const nombres = desglose.map(d => String(d?.zonaNombre || '').trim()).filter(Boolean);
+    if (nombres.length) return [...new Set(nombres)];
+    return [String(registro?.seccionCapturada || registro?.producto?.seccion || 'General').trim() || 'General'];
+}
+
 function valorZonaRegistro(registro) {
-    return String(registro?.seccionCapturada || registro?.producto?.seccion || 'General').trim() || 'General';
+    return zonasRegistro(registro).join(' · ');
 }
 
 function leerFiltrosDetalleHistorial() {
@@ -499,7 +535,7 @@ function obtenerRegistrosDetalleFiltrados() {
         if (desde && fecha && fecha < desde) return false;
         if (hasta && fecha && fecha > hasta) return false;
         if (deptoNormalizado && normalizarTextoFiltro(valorDepartamentoRegistro(registro)) !== deptoNormalizado) return false;
-        if (zonaNormalizada && normalizarTextoFiltro(valorZonaRegistro(registro)) !== zonaNormalizada) return false;
+        if (zonaNormalizada && !zonasRegistro(registro).some(nombre => normalizarTextoFiltro(nombre) === zonaNormalizada)) return false;
         return true;
     });
 }
@@ -541,15 +577,14 @@ function construirResumenRegistrosFrontend(registros = []) {
             }
         }
 
-        const usuario = registro.usuario;
-        const clave = usuario?.id || usuario?.username || usuario?.nombre || 'sin-identificar';
-        if (!participantes.has(clave)) {
-            participantes.set(clave, {
-                nombre: usuario?.nombre || usuario?.username || 'Sin identificar',
-                conteos: 0
-            });
-        }
-        participantes.get(clave).conteos += 1;
+        const listaParticipantes = Array.isArray(registro.participantesConteo) && registro.participantesConteo.length
+            ? registro.participantesConteo
+            : registro.usuario ? [{ ...registro.usuario, conteos: 1 }] : [];
+        listaParticipantes.forEach(usuario => {
+            const clave = usuario?.id || usuario?.username || usuario?.nombre || 'sin-identificar';
+            if (!participantes.has(clave)) participantes.set(clave, { nombre: usuario?.nombre || usuario?.username || 'Sin identificar', conteos: 0 });
+            participantes.get(clave).conteos += Number(usuario.conteos || 1);
+        });
     });
 
     resumen.participantes = [...participantes.values()]
@@ -606,7 +641,7 @@ function datosDetalleParaReporte(registros) {
         'Producto': registro.producto?.nombre || '',
         'Departamento': valorDepartamentoRegistro(registro),
         'Zona': valorZonaRegistro(registro),
-        'Contado por': registro.usuario?.nombre || registro.usuario?.username || 'Sin identificar',
+        'Contado por': Array.isArray(registro.participantesConteo) && registro.participantesConteo.length ? registro.participantesConteo.map(p => p.nombre || p.username).filter(Boolean).join(', ') : (registro.usuario?.nombre || registro.usuario?.username || 'Sin identificar'),
         'Físico': registro.cantidadFisica,
         'SICAR': registro.stockSicar ?? '',
         'Diferencia': registro.diferencia ?? '',
@@ -662,6 +697,26 @@ function exportarInventarioExcel() {
         { wch: 24 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }
     ];
     XLSX.utils.book_append_sheet(wb, wsDetalle, 'Detalle');
+
+    const desgloseUbicaciones = registros.flatMap(registro => {
+        const lineas = Array.isArray(registro.desgloseUbicaciones) && registro.desgloseUbicaciones.length
+            ? registro.desgloseUbicaciones
+            : [{ zonaNombre: valorZonaRegistro(registro), cantidadFisica: registro.cantidadFisica, createdAt: registro.createdAt, usuario: registro.usuario }];
+        return lineas
+            .filter(linea => !filtrosDetalleHistorialAdmin.zona || normalizarTextoFiltro(linea.zonaNombre) === normalizarTextoFiltro(filtrosDetalleHistorialAdmin.zona))
+            .map(linea => ({
+                'Fecha y hora': formatearFecha(linea.createdAt),
+                'Código': registro.producto?.codigo || '',
+                'Producto': registro.producto?.nombre || '',
+                'Departamento': valorDepartamentoRegistro(registro),
+                'Ubicación': linea.zonaNombre || 'Sin ubicación',
+                'Cantidad en ubicación': Number(linea.cantidadFisica || 0),
+                'Contado por': linea.usuario?.nombre || linea.usuario?.username || 'Sin identificar'
+            }));
+    });
+    const wsDesglose = XLSX.utils.json_to_sheet(desgloseUbicaciones.length ? desgloseUbicaciones : [{ 'Resultado': 'Sin desglose disponible' }]);
+    wsDesglose['!cols'] = [{ wch: 20 }, { wch: 18 }, { wch: 42 }, { wch: 24 }, { wch: 28 }, { wch: 20 }, { wch: 26 }];
+    XLSX.utils.book_append_sheet(wb, wsDesglose, 'Desglose ubicaciones');
 
     const actividad = dias.map(dia => ({
         'Fecha': dia.fecha,
@@ -800,7 +855,7 @@ function renderizarDetalleInventario() {
     const participantes = resumen.participantes;
 
     const departamentos = todosRegistros.map(valorDepartamentoRegistro);
-    const zonasDetalle = todosRegistros.map(valorZonaRegistro);
+    const zonasDetalle = todosRegistros.flatMap(zonasRegistro);
 
     const filasDias = dias.length ? dias.map(dia => `
         <tr class="border-b last:border-0">
@@ -814,7 +869,7 @@ function renderizarDetalleInventario() {
 
     const filasDetalle = registros.length ? registros.map(registro => {
         const diferencia = registro.diferencia;
-        const usuario = registro.usuario?.nombre || registro.usuario?.username || 'Sin identificar';
+        const usuario = Array.isArray(registro.participantesConteo) && registro.participantesConteo.length ? registro.participantesConteo.map(p => p.nombre || p.username).filter(Boolean).join(', ') : (registro.usuario?.nombre || registro.usuario?.username || 'Sin identificar');
         const codigo = registro.producto?.codigo || '--';
         return `
             <tr class="border-b last:border-0">
@@ -945,6 +1000,7 @@ function renderizarDetalleInventario() {
 
 async function cargarDatosIniciales() {
     await Promise.all([
+        cargarZonasDesdeBD({ silencioso: true }),
         cargarProductosDesdeBD(),
         cargarSesionInventarioActiva(),
         cargarCapturasDesdeBD({ silencioso: true })
@@ -1348,7 +1404,6 @@ async function buscarProducto(codigoEscaneado) {
         const producto = await apiBuscarProducto(codigo);
         const normalizado = normalizarProducto(producto);
         productosDia.push(normalizado);
-        incorporarZonasDesdeProductos();
         return normalizado;
     } catch (error) {
         if (!/no encontrado/i.test(error.message)) console.error(error);
@@ -1401,6 +1456,148 @@ function procesarCodigoEmpleadoEnTiempoReal(valor) {
     }
 }
 
+function renderizarSelectorUbicacionEmpleado() {
+    const select = document.getElementById('select-zona-conteo');
+    if (!select) return;
+    const anterior = select.value;
+    select.innerHTML = zonas.length
+        ? zonas.map(z => `<option value="${escaparHtml(z.id)}">${escaparHtml(z.nombre)}</option>`).join('')
+        : '<option value="">No hay ubicaciones configuradas</option>';
+    if (zonas.some(z => z.id === anterior)) select.value = anterior;
+    actualizarPanelCoordinacionProducto();
+    renderizarTareasCoordinadas();
+}
+
+function ubicacionConteoActual() {
+    const id = document.getElementById('select-zona-conteo')?.value || '';
+    return zonas.find(z => z.id === id) || null;
+}
+
+function cambiarUbicacionConteo() {
+    const codigoFormulario = String(document.getElementById('codigo-input')?.value || '').trim();
+    const codigo = codigoFormulario || codigoProductoMultiubicacionActivo;
+    const producto = productosDia.find(p => p.codigo === codigo) || null;
+    actualizarPanelCoordinacionProducto(producto);
+    renderizarTareasCoordinadas();
+}
+
+function obtenerTareasCoordinadasGlobales() {
+    const tareas = [];
+
+    for (const producto of productosDia) {
+        const habituales = Array.isArray(producto.ubicaciones) ? producto.ubicaciones : [];
+        if (habituales.length <= 1) continue;
+
+        const lineas = capturas.filter(c => c.codigo === producto.codigo);
+        if (!lineas.length) continue;
+
+        const zonasContadas = new Set();
+        const fechas = [];
+        for (const c of lineas) {
+            if (Array.isArray(c.desgloseUbicaciones) && c.desgloseUbicaciones.length) {
+                c.desgloseUbicaciones.forEach(d => {
+                    if (d.zonaId) zonasContadas.add(d.zonaId);
+                    const ms = new Date(d.createdAt || 0).getTime();
+                    if (Number.isFinite(ms)) fechas.push(ms);
+                });
+            } else {
+                if (c.zonaId) zonasContadas.add(c.zonaId);
+                const ms = new Date(c.fechahora || 0).getTime();
+                if (Number.isFinite(ms)) fechas.push(ms);
+            }
+        }
+
+        // La coordinación solo comienza cuando al menos una ubicación habitual ya fue contada.
+        if (!habituales.some(z => zonasContadas.has(z.id))) continue;
+        const pendientes = habituales.filter(z => !zonasContadas.has(z.id));
+        if (!pendientes.length) continue;
+
+        const inicioMs = fechas.length ? Math.min(...fechas) : Date.now();
+        tareas.push({
+            producto,
+            pendientes,
+            minutos: Math.max(0, Math.round((Date.now() - inicioMs) / 60000))
+        });
+    }
+
+    return tareas.sort((a, b) => b.minutos - a.minutos || a.producto.nombre.localeCompare(b.producto.nombre));
+}
+
+function renderizarTareasCoordinadas() {
+    // Fase 10.2: la coordinación se muestra únicamente sobre el producto que la
+    // empleada está contando. No enviamos a la persona a perseguir tareas globales
+    // por toda la tienda; el selector de ubicación sigue bajo su control.
+    const panel = document.getElementById('tareas-coordinadas');
+    if (!panel) return;
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+}
+
+function actualizarPanelCoordinacionProducto(producto = null) {
+    const panel = document.getElementById('coordinacion-producto');
+    if (!panel) return;
+    if (!producto) {
+        panel.classList.add('hidden');
+        panel.innerHTML = '';
+        return;
+    }
+
+    const actual = ubicacionConteoActual();
+    const habituales = producto.ubicaciones || [];
+    const esHabitual = Boolean(actual && habituales.some(z => z.id === actual.id));
+    const contadas = habituales.filter(z => productoContadoEnZona(producto, z.id));
+    const pendientes = habituales.filter(z => !productoContadoEnZona(producto, z.id));
+    const esMultiubicacion = habituales.length > 1;
+
+    const chips = habituales.length
+        ? habituales.map(z => {
+            const contado = productoContadoEnZona(producto, z.id);
+            const esActual = actual?.id === z.id;
+            const clase = contado
+                ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+                : esActual
+                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                    : 'bg-white text-slate-700 border-slate-300';
+            const icono = contado ? 'fa-circle-check' : esActual ? 'fa-location-dot' : 'fa-clock';
+            return `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full border text-[10px] font-bold ${clase}"><i class="fa-solid ${icono}"></i>${escaparHtml(z.nombre)}${contado ? ' · contado' : esActual ? ' · aquí' : ' · pendiente'}</span>`;
+        }).join(' ')
+        : '<span class="text-[10px] text-gray-500">Este producto todavía no tiene ubicaciones habituales mapeadas.</span>';
+
+    const avisoNoHabitual = actual && !esHabitual
+        ? `<div class="mt-2 text-[10px] text-amber-900 bg-amber-100 border border-amber-300 rounded p-2"><i class="fa-solid fa-triangle-exclamation me-1"></i>${escaparHtml(actual.nombre)} no está registrada como ubicación habitual de este producto. El conteo se aceptará y el administrador podrá decidir si agrega el mapeo.</div>`
+        : '';
+
+    if (esMultiubicacion) {
+        const completo = pendientes.length === 0;
+        const faltantes = pendientes.map(z => z.nombre).join(', ');
+        panel.className = `${completo ? 'bg-emerald-50 border-emerald-300' : 'bg-amber-50 border-amber-400'} border-2 rounded-lg p-3`;
+        panel.innerHTML = `
+            <div class="flex items-start gap-2">
+                <i class="fa-solid ${completo ? 'fa-circle-check text-emerald-600' : 'fa-triangle-exclamation text-amber-600'} mt-0.5"></i>
+                <div class="min-w-0 flex-1">
+                    <div class="text-xs font-extrabold ${completo ? 'text-emerald-800' : 'text-amber-900'} uppercase tracking-wide">
+                        ${completo ? 'Conteo multiubicación completo' : 'Importante: producto en varias ubicaciones'}
+                    </div>
+                    <div class="text-[11px] ${completo ? 'text-emerald-700' : 'text-amber-900'} mt-1 leading-relaxed">
+                        ${completo
+                            ? `Ya se contaron las ${habituales.length} ubicaciones habituales de este producto.`
+                            : `Este producto tiene existencias habituales en ${habituales.length} ubicaciones. Para reducir el riesgo de que una venta cambie SICAR durante el conteo, termina las demás ubicaciones lo antes posible antes de continuar con otro producto.`}
+                    </div>
+                    <div class="mt-2 flex flex-wrap gap-1">${chips}</div>
+                    <div class="mt-2 text-[10px] font-bold ${completo ? 'text-emerald-700' : 'text-amber-800'}">
+                        ${contadas.length} de ${habituales.length} ubicaciones contadas${!completo ? ` · Faltan: ${escaparHtml(faltantes)}` : ''}
+                    </div>
+                </div>
+            </div>
+            ${avisoNoHabitual}`;
+    } else {
+        panel.className = 'bg-slate-50 border border-slate-200 rounded-lg p-2';
+        panel.innerHTML = `<div class="text-[10px] uppercase font-bold text-gray-400 mb-1">Ubicación del producto</div><div class="flex flex-wrap gap-1">${chips}</div>${avisoNoHabitual}`;
+    }
+
+    panel.classList.remove('hidden');
+}
+
 async function procesarEscaneoEmpleado(codigo) {
     const codigoLimpio = String(codigo || '').trim();
     const inputCodigo = document.getElementById('codigo-input');
@@ -1416,14 +1613,26 @@ async function procesarEscaneoEmpleado(codigo) {
     const producto = await buscarProducto(codigoLimpio);
     if (!producto) {
         if (inputProd) inputProd.value = 'Producto no registrado';
+        actualizarPanelCoordinacionProducto(null);
         mostrarToast('Producto no encontrado en la base de datos', 'error');
         return null;
     }
 
     if (inputProd) inputProd.value = producto.nombre;
     if (inputPrecio) inputPrecio.value = `$${producto.precio.toFixed(2)}`;
+
+    const pendientesMulti = (producto.ubicaciones || []).filter(z => !productoContadoEnZona(producto, z.id));
+    if ((producto.ubicaciones || []).length > 1 && pendientesMulti.length) {
+        codigoProductoMultiubicacionActivo = producto.codigo;
+    }
+
+    actualizarPanelCoordinacionProducto(producto);
     if (inputCant) inputCant.focus();
-    mostrarToast(`Producto encontrado: ${producto.nombre}`);
+    if ((producto.ubicaciones || []).length > 1) {
+        mostrarToast(`Producto multiubicación: revisa las ${(producto.ubicaciones || []).length} ubicaciones indicadas antes de continuar.`, 'warning', 6000);
+    } else {
+        mostrarToast(`Producto encontrado: ${producto.nombre}`);
+    }
     return producto;
 }
 
@@ -1433,7 +1642,6 @@ async function simularEscaneo(codigo) {
 
 async function registrarConteo(event) {
     event.preventDefault();
-
     if (!sesionInventarioActiva?.id) {
         mostrarToast('No hay un inventario activo. Solicita a un administrador que inicie uno.', 'error');
         return;
@@ -1443,36 +1651,31 @@ async function registrarConteo(event) {
     const cantidadInput = document.getElementById('cantidad-input');
     const productoInput = document.getElementById('producto-input');
     const precioInput = document.getElementById('precio-input');
-
+    const zona = ubicacionConteoActual();
     const codigo = String(codigoInput?.value || '').trim();
     const cantidad = Number(cantidadInput?.value);
 
+    if (!zona) {
+        mostrarToast('Selecciona primero la ubicación física que estás contando', 'error');
+        document.getElementById('select-zona-conteo')?.focus();
+        return;
+    }
     if (!codigo || !Number.isInteger(cantidad) || cantidad < 0) {
         mostrarToast('Ingresa un código y una cantidad válida', 'error');
         return;
     }
 
     const producto = await buscarProducto(codigo);
-    if (!producto) {
-        mostrarToast('No se puede registrar: producto no encontrado', 'error');
-        return;
-    }
-
-    if (producto.contado) {
-        mostrarToast('Este producto ya fue contado en el inventario activo', 'error');
+    if (!producto) return mostrarToast('No se puede registrar: producto no encontrado', 'error');
+    if (productoContadoEnZona(producto, zona.id)) {
+        mostrarToast(`Este producto ya fue contado en ${zona.nombre}`, 'error');
         return;
     }
 
     try {
-        const respuesta = await apiRegistrarCaptura({
-            codigo,
-            cantidad,
-            zona: producto.zona || 'General'
-        });
-
-        const nueva = normalizarCaptura(respuesta.data);
-        capturas.unshift(nueva);
-        producto.contado = true;
+        const respuesta = await apiRegistrarCaptura({ codigo, cantidad, zonaId: zona.id });
+        capturas.unshift(normalizarCaptura(respuesta.data));
+        sincronizarProductosContados();
 
         if (codigoInput) codigoInput.value = '';
         if (cantidadInput) cantidadInput.value = '';
@@ -1481,14 +1684,36 @@ async function registrarConteo(event) {
         codigoEmpleadoPreview = '';
 
         renderizarListaEmpleado();
+        renderizarTareasCoordinadas();
         renderizarTabla();
-        mostrarToast(`Conteo registrado: ${cantidad} unidades`);
+
+        const pendientesCoordinados = (producto.ubicaciones || []).filter(z => !productoContadoEnZona(producto, z.id));
+        const esMultiubicacion = (producto.ubicaciones || []).length > 1;
+        if (esMultiubicacion && pendientesCoordinados.length) {
+            codigoProductoMultiubicacionActivo = producto.codigo;
+            actualizarPanelCoordinacionProducto(producto);
+            mostrarToast(
+                `Guardado en ${zona.nombre}. MULTIUBICACIÓN: faltan ${pendientesCoordinados.length}: ${pendientesCoordinados.map(z => z.nombre).join(', ')}. Cuéntalas lo antes posible.`,
+                'warning',
+                7000
+            );
+        } else if (esMultiubicacion) {
+            codigoProductoMultiubicacionActivo = '';
+            actualizarPanelCoordinacionProducto(producto);
+            mostrarToast(`Conteo multiubicación completo: ${producto.ubicaciones.length} de ${producto.ubicaciones.length} ubicaciones contadas. Ya puede compararse con SICAR.`, 'success', 5000);
+        } else {
+            if (codigoProductoMultiubicacionActivo === producto.codigo) codigoProductoMultiubicacionActivo = '';
+            actualizarPanelCoordinacionProducto(null);
+            mostrarToast(respuesta.ubicacionHabitual === false
+                ? `Conteo registrado en ${zona.nombre}. Ubicación no habitual detectada.`
+                : `Conteo registrado en ${zona.nombre}: ${cantidad} unidades`);
+        }
         codigoInput?.focus();
     } catch (error) {
         console.error(error);
-        if (error?.code === 'PRODUCT_ALREADY_COUNTED') {
+        if (error?.code === 'PRODUCT_LOCATION_ALREADY_COUNTED') {
             await cargarCapturasDesdeBD({ silencioso: true });
-            mostrarToast('Otro usuario ya contó este producto en el inventario activo', 'error');
+            mostrarToast(`Otro usuario ya contó este producto en ${zona.nombre}`, 'error');
             return;
         }
         mostrarToast(`No se pudo registrar el conteo: ${error.message}`, 'error');
@@ -1498,7 +1723,6 @@ async function registrarConteo(event) {
 function renderizarListaEmpleado() {
     const cont = document.getElementById('contenedor-lista-diaria');
     if (!cont) return;
-
     if (!productosDia.length) {
         cont.innerHTML = '<div class="text-center text-xs text-gray-400 py-6">No hay productos disponibles.</div>';
         return;
@@ -1507,95 +1731,52 @@ function renderizarListaEmpleado() {
     const orden = document.getElementById('select-orden-emp')?.value || 'barrida';
     const grupos = new Map();
 
-    productosDia.forEach(producto => {
-        const grupo = orden === 'departamento'
-            ? (producto.depto || 'General')
-            : (producto.zona || 'Sin zona asignada');
-        if (!grupos.has(grupo)) grupos.set(grupo, []);
-        grupos.get(grupo).push(producto);
-    });
+    if (orden === 'barrida') {
+        zonas.forEach(zona => {
+            const items = productosDia
+                .filter(p => (p.ubicaciones || []).some(u => u.id === zona.id))
+                .map(p => ({ producto: p, zonaId: zona.id }));
+            if (items.length) grupos.set(zona.nombre, items);
+        });
+        const sinZona = productosDia.filter(p => !(p.ubicaciones || []).length).map(p => ({ producto: p, zonaId: null }));
+        if (sinZona.length) grupos.set('Sin zona asignada', sinZona);
+    } else {
+        productosDia.forEach(producto => {
+            const nombre = producto.depto || 'General';
+            if (!grupos.has(nombre)) grupos.set(nombre, []);
+            grupos.get(nombre).push({ producto, zonaId: null });
+        });
+    }
 
-    const ultimaCapturaPorCodigo = new Map();
-    capturas.forEach(captura => {
-        if (!captura.codigo || !captura.fechahora) return;
-        const fecha = new Date(captura.fechahora).getTime();
-        if (!Number.isFinite(fecha)) return;
-        const actual = ultimaCapturaPorCodigo.get(captura.codigo) || 0;
-        if (fecha > actual) ultimaCapturaPorCodigo.set(captura.codigo, fecha);
-    });
-
-    const infoGrupo = nombre => {
-        const productos = grupos.get(nombre) || [];
-        const completado = productos.length > 0 && productos.every(p => p.contado);
-        const fechaFinalizacion = completado
-            ? Math.max(...productos.map(p => ultimaCapturaPorCodigo.get(p.codigo) || 0))
-            : 0;
-        return { productos, completado, fechaFinalizacion };
-    };
-
-    const nombresGrupos = [...grupos.keys()].sort((a, b) => {
-        // La agrupación grande de productos sin zona siempre queda hasta el final.
-        if (orden === 'barrida') {
-            if (a === 'Sin zona asignada') return 1;
-            if (b === 'Sin zona asignada') return -1;
-
-            const infoA = infoGrupo(a);
-            const infoB = infoGrupo(b);
-
-            // Zonas pendientes primero; zonas 100% contadas se apilan abajo,
-            // inmediatamente antes de "Sin zona asignada".
-            if (infoA.completado !== infoB.completado) {
-                return infoA.completado ? 1 : -1;
-            }
-
-            // Entre zonas terminadas conservamos el orden en que se fueron completando:
-            // la última terminada queda más cerca de "Sin zona asignada".
-            if (infoA.completado && infoB.completado && infoA.fechaFinalizacion !== infoB.fechaFinalizacion) {
-                return infoA.fechaFinalizacion - infoB.fechaFinalizacion;
-            }
-        }
-
+    const nombres = [...grupos.keys()].sort((a, b) => {
+        if (a === 'Sin zona asignada') return 1;
+        if (b === 'Sin zona asignada') return -1;
+        const completoA = grupos.get(a).length > 0 && grupos.get(a).every(item => item.zonaId ? productoContadoEnZona(item.producto, item.zonaId) : item.producto.contado);
+        const completoB = grupos.get(b).length > 0 && grupos.get(b).every(item => item.zonaId ? productoContadoEnZona(item.producto, item.zonaId) : item.producto.contado);
+        if (orden === 'barrida' && completoA !== completoB) return completoA ? 1 : -1;
         return a.localeCompare(b, 'es');
     });
 
-    const fragment = document.createDocumentFragment();
-    nombresGrupos.forEach(nombreGrupo => {
-        const info = infoGrupo(nombreGrupo);
-        const productos = info.productos.sort((a, b) => {
-            if (a.contado !== b.contado) return a.contado ? 1 : -1;
-            return a.nombre.localeCompare(b.nombre, 'es');
+    cont.innerHTML = nombres.map(nombre => {
+        const items = grupos.get(nombre).slice().sort((a, b) => {
+            const ca = a.zonaId ? productoContadoEnZona(a.producto, a.zonaId) : a.producto.contado;
+            const cb = b.zonaId ? productoContadoEnZona(b.producto, b.zonaId) : b.producto.contado;
+            if (ca !== cb) return ca ? 1 : -1;
+            return a.producto.nombre.localeCompare(b.producto.nombre, 'es');
         });
-        const sec = document.createElement('div');
+        const completa = items.length > 0 && items.every(item => item.zonaId ? productoContadoEnZona(item.producto, item.zonaId) : item.producto.contado);
+        const filas = items.map(({ producto: prod, zonaId }) => {
+            const contado = zonaId ? productoContadoEnZona(prod, zonaId) : prod.contado;
+            const avance = !zonaId && prod.ubicaciones.length > 1
+                ? `<div class="text-[9px] text-gray-400">${prod.conteosPorZona?.size || 0}/${prod.ubicaciones.length} ubicaciones</div>` : '';
+            return `<div class="p-2.5 rounded-lg border text-xs flex justify-between items-center ${contado ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-white border-gray-200'}">
+                <div class="min-w-0 pr-2"><div class="font-bold truncate">${escaparHtml(prod.nombre)}</div><div class="text-[10px] text-gray-400 font-mono">${escaparHtml(prod.codigo)}</div>${avance}</div>
+                ${contado ? '<span class="text-emerald-600 font-bold text-[10px] whitespace-nowrap"><i class="fa-solid fa-circle-check"></i> Contado</span>' : '<span class="text-gray-400 text-[10px] whitespace-nowrap">Pendiente</span>'}
+            </div>`;
+        }).join('');
         const icono = orden === 'departamento' ? 'fa-folder' : 'fa-location-dot';
-        const etiquetaCompletada = orden === 'barrida' && nombreGrupo !== 'Sin zona asignada' && info.completado
-            ? '<span class="ms-2 text-[9px] text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-full">COMPLETA</span>'
-            : '';
-        sec.innerHTML = `<h4 class="font-bold text-xs uppercase bg-slate-100 text-slate-700 px-2 py-1 rounded mb-2"><i class="fa-solid ${icono} me-1"></i>${escaparHtml(nombreGrupo)} <span class="text-[10px] text-gray-400">(${productos.length})</span>${etiquetaCompletada}</h4>`;
-
-        const sublist = document.createElement('div');
-        sublist.className = 'space-y-1.5 pl-1 mb-3';
-
-        productos.forEach(prod => {
-            const div = document.createElement('div');
-            div.className = `p-2.5 rounded-lg border text-xs flex justify-between items-center ${prod.contado ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-white border-gray-200'}`;
-            div.innerHTML = `
-                <div class="min-w-0 pr-2">
-                    <div class="font-bold truncate">${escaparHtml(prod.nombre)}</div>
-                    <div class="text-[10px] text-gray-400 font-mono">${escaparHtml(prod.codigo)}</div>
-                </div>
-                ${prod.contado
-                    ? '<span class="text-emerald-600 font-bold text-[10px] whitespace-nowrap"><i class="fa-solid fa-circle-check"></i> Contado</span>'
-                    : '<span class="text-gray-400 text-[10px] whitespace-nowrap">Pendiente</span>'}
-            `;
-            sublist.appendChild(div);
-        });
-
-        sec.appendChild(sublist);
-        fragment.appendChild(sec);
-    });
-
-    cont.innerHTML = '';
-    cont.appendChild(fragment);
+        return `<section><h4 class="font-bold text-xs uppercase bg-slate-100 text-slate-700 px-2 py-1 rounded mb-2"><i class="fa-solid ${icono} me-1"></i>${escaparHtml(nombre)} <span class="text-[10px] text-gray-400">(${items.length})</span>${orden === 'barrida' && completa && nombre !== 'Sin zona asignada' ? '<span class="ms-2 text-[9px] text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-full">COMPLETA</span>' : ''}</h4><div class="space-y-1.5 pl-1 mb-3">${filas}</div></section>`;
+    }).join('');
 }
 
 function formatearFecha(fecha) {
@@ -1648,60 +1829,66 @@ function htmlFilaCaptura(c) {
     const tieneBorrador = borradoresSicar.has(c.id);
     const valorSicarVista = tieneBorrador ? borradoresSicar.get(c.id) : (c.sicar ?? '');
     const numeroBorrador = String(valorSicarVista).trim() === '' ? null : Number(valorSicarVista);
-    const diff = numeroBorrador !== null && Number.isInteger(numeroBorrador)
-        ? c.fisico - numeroBorrador
-        : c.diferencia;
+    const diff = numeroBorrador !== null && Number.isInteger(numeroBorrador) ? c.fisico - numeroBorrador : c.diferencia;
     const diffClase = diff === null ? 'text-gray-400' : diff === 0 ? 'text-emerald-600' : 'text-red-600';
     const estadoCompleto = c.estado === 'completado';
-    const usuarioNombre = c.usuarioNombre || c.usuarioUsername || 'Sin identificar';
-    const usuarioUsername = c.usuarioUsername && c.usuarioUsername !== usuarioNombre
-        ? `@${c.usuarioUsername}`
-        : '';
+    const participantes = c.participantesConteo || [];
+    const usuarioNombre = participantes.length > 1 ? `${participantes.length} participantes` : (c.usuarioNombre || c.usuarioUsername || 'Sin identificar');
+    const desglose = (c.desgloseUbicaciones || []).map(d =>
+        `<div class="text-[10px] text-slate-500 flex items-center gap-1 whitespace-nowrap"><span><i class="fa-solid fa-location-dot text-amber-500 me-1"></i>${escaparHtml(d.zonaNombre)}: <b>${Number(d.cantidadFisica || 0)}</b>${d.usuario?.nombre ? ` · ${escaparHtml(d.usuario.nombre)}` : ''}</span><button type="button" onclick="eliminarConteoUbicacion('${d.id}')" class="text-red-400 hover:text-red-600" title="Quitar este conteo para volver a realizarlo"><i class="fa-solid fa-rotate-left"></i></button></div>`
+    ).join('');
+    const pendientes = c.conteoCoordinado?.pendientes || [];
+    const noHabituales = c.conteoCoordinado?.noHabituales || [];
+    const coordinacion = pendientes.length
+        ? `<div class="mt-1 text-[10px] text-amber-700 font-semibold" title="${escaparHtml(pendientes.map(z => z.nombre).join(', '))}"><i class="fa-solid fa-clock me-1"></i>Faltan ${pendientes.length} ubicación(es)</div>`
+        : c.conteoCoordinado?.requerido ? '<div class="mt-1 text-[10px] text-emerald-700 font-semibold"><i class="fa-solid fa-circle-check me-1"></i>Ubicaciones habituales completas</div>' : '';
+    const avisoDesfase = c.conteoCoordinado?.desfasado
+        ? `<div class="mt-1 text-[10px] text-red-600 font-semibold"><i class="fa-solid fa-clock-rotate-left me-1"></i>Conteos separados ${c.conteoCoordinado.minutosEntreConteos} min</div>` : '';
+    const avisoNoHabitual = noHabituales.length
+        ? `<div class="mt-1 text-[10px] text-indigo-600 font-semibold"><i class="fa-solid fa-location-crosshairs me-1"></i>Ubicación no habitual: ${noHabituales.map(z => `<button type="button" onclick="confirmarUbicacionHabitual('${escaparHtml(c.codigo)}','${escaparHtml(z.id)}')" class="underline hover:text-indigo-800" title="Agregar al mapeo habitual">${escaparHtml(z.nombre)} +</button>`).join(', ')}</div>` : '';
 
     return `
-        <tr data-captura-id="${escaparHtml(c.id)}" class="hover:bg-slate-50">
+        <tr data-captura-id="${escaparHtml(c.id)}" class="hover:bg-slate-50 align-top">
             <td class="p-3 text-xs whitespace-nowrap">${formatearFecha(c.fechahora)}</td>
-            <td class="p-3 text-xs">
-                <div class="flex items-center gap-1.5">
-                    <span class="font-mono">${escaparHtml(c.codigo)}</span>
-                    <button type="button" data-code="${escaparHtml(c.codigo)}" onclick="copiarCodigoDesdeBoton(this)"
-                            class="text-gray-400 hover:text-amber-600" title="Copiar código para consultar en SICAR">
-                        <i class="fa-regular fa-copy"></i>
-                    </button>
-                </div>
-            </td>
-            <td class="p-3 font-semibold">${escaparHtml(c.producto)}</td>
-            <td class="p-3 whitespace-nowrap">
-                <div class="font-semibold text-slate-800">${escaparHtml(usuarioNombre)}</div>
-                ${usuarioUsername ? `<div class="text-[10px] text-gray-400">${escaparHtml(usuarioUsername)}</div>` : ''}
-            </td>
-            <td class="p-3 font-bold text-slate-900">${c.fisico}</td>
-            <td class="p-3">
-                <input
-                    id="sicar-${c.id}"
-                    type="number"
-                    min="0"
-                    step="1"
-                    value="${escaparHtml(String(valorSicarVista))}"
-                    placeholder="Capturar"
-                    oninput="actualizarDiferenciaVista('${c.id}')"
-                    class="w-24 border rounded p-1.5 text-sm font-bold bg-white focus:ring-2 focus:ring-amber-500 outline-none"
-                    title="Consulta SICAR ahora y escribe aquí la existencia vigente"
-                />
-            </td>
+            <td class="p-3 text-xs"><div class="flex items-center gap-1.5"><span class="font-mono">${escaparHtml(c.codigo)}</span><button type="button" data-code="${escaparHtml(c.codigo)}" onclick="copiarCodigoDesdeBoton(this)" class="text-gray-400 hover:text-amber-600" title="Copiar código para consultar en SICAR"><i class="fa-regular fa-copy"></i></button></div></td>
+            <td class="p-3 font-semibold"><div>${escaparHtml(c.producto)}</div>${coordinacion}${avisoDesfase}${avisoNoHabitual}</td>
+            <td class="p-3"><div class="font-semibold text-slate-800">${escaparHtml(usuarioNombre)}</div>${participantes.length > 1 ? `<div class="text-[10px] text-gray-400">${escaparHtml(participantes.map(p => p.nombre).join(', '))}</div>` : ''}</td>
+            <td class="p-3"><div class="font-bold text-slate-900 text-base">${c.fisico}</div><div class="mt-1 space-y-0.5">${desglose}</div></td>
+            <td class="p-3"><input id="sicar-${c.id}" type="number" min="0" step="1" value="${escaparHtml(String(valorSicarVista))}" placeholder="Capturar" oninput="actualizarDiferenciaVista('${c.id}')" class="w-24 border rounded p-1.5 text-sm font-bold bg-white focus:ring-2 focus:ring-amber-500 outline-none" title="Consulta SICAR ahora y escribe aquí la existencia vigente" /></td>
             <td id="diferencia-${c.id}" class="p-3 font-bold ${diffClase}">${formatearDiferencia(diff)}</td>
-            <td class="p-3">
-                <span class="px-2 py-1 rounded-full text-[10px] font-bold uppercase ${estadoCompleto ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">
-                    ${estadoCompleto ? 'Completado' : 'Pendiente'}
-                </span>
-            </td>
-            <td class="p-3 text-center">
-                <button onclick="guardarValidacionCaptura('${c.id}')" class="bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded text-xs font-bold shadow">
-                    <i class="fa-solid fa-check me-1 text-amber-400"></i>${estadoCompleto ? 'Actualizar' : 'Validar'}
-                </button>
-            </td>
-        </tr>
-    `;
+            <td class="p-3"><span class="px-2 py-1 rounded-full text-[10px] font-bold uppercase ${estadoCompleto ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">${estadoCompleto ? 'Completado' : 'Pendiente'}</span></td>
+            <td class="p-3 text-center"><button onclick="guardarValidacionCaptura('${c.id}')" class="bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded text-xs font-bold shadow"><i class="fa-solid fa-check me-1 text-amber-400"></i>${estadoCompleto ? 'Actualizar' : 'Validar'}</button></td>
+        </tr>`;
+}
+
+async function confirmarUbicacionHabitual(codigo, zonaId) {
+    try {
+        await apiAsignarProductoZona(zonaId, codigo);
+        const producto = productosDia.find(p => p.codigo === codigo);
+        const zona = zonas.find(z => z.id === zonaId);
+        if (producto && zona && !producto.ubicaciones.some(u => u.id === zonaId)) producto.ubicaciones.push({ id: zona.id, nombre: zona.nombre });
+        if (zona) zona.totalProductos = Number(zona.totalProductos || 0) + 1;
+        sincronizarProductosContados();
+        renderizarMapeoAdmin();
+        renderizarListaEmpleado();
+        renderizarTareasCoordinadas();
+        mostrarToast('Ubicación agregada al mapeo habitual del producto');
+        cargarCapturasDesdeBD({ silencioso: true });
+    } catch (error) {
+        mostrarToast(`No se pudo actualizar el mapeo: ${error.message}`, 'error');
+    }
+}
+
+async function eliminarConteoUbicacion(id) {
+    if (!window.confirm('¿Quitar este conteo de ubicación?\n\nLa ubicación quedará pendiente y podrá contarse nuevamente. Si el producto ya estaba validado, su validación se reiniciará porque cambiará el total físico.')) return;
+    try {
+        await apiEliminarConteoUbicacion(id);
+        borradoresSicar.clear();
+        mostrarToast('Conteo retirado. Ya puede realizarse nuevamente.');
+        await cargarCapturasDesdeBD({ silencioso: true });
+    } catch (error) {
+        mostrarToast(`No se pudo retirar el conteo: ${error.message}`, 'error');
+    }
 }
 
 function capturasVisiblesEnFiltro() {
@@ -1755,60 +1942,67 @@ function filtrarTabla(filtro) {
     renderizarTabla();
 }
 
-async function guardarValidacionCaptura(id) {
+async function guardarValidacionCaptura(id, { forzarUbicaciones = false } = {}) {
     const input = document.getElementById(`sicar-${id}`);
     const valorSicar = String(input?.value ?? '').trim();
-
     if (valorSicar === '') {
         mostrarToast('Consulta SICAR e ingresa la existencia actual antes de validar', 'error');
         input?.focus();
         return;
     }
-
     const stockSicar = Number(valorSicar);
-    if (!Number.isInteger(stockSicar)) {
+    if (!Number.isInteger(stockSicar) || stockSicar < 0) {
         mostrarToast('Ingresa una existencia SICAR válida', 'error');
         input?.focus();
         return;
     }
 
     try {
-        const respuesta = await apiActualizarCaptura(id, {
-            stockSicar,
-            estado: 'COMPLETADO'
-        });
+        const respuesta = await apiActualizarCaptura(id, { stockSicar, estado: 'COMPLETADO', forzarUbicaciones });
         const actualizada = normalizarCaptura(respuesta.data);
         const indice = capturas.findIndex(c => c.id === id);
         if (indice >= 0) capturas[indice] = actualizada;
         borradoresSicar.delete(id);
+        sincronizarProductosContados();
         renderizarTabla();
-        mostrarToast('Captura validada correctamente');
+        mostrarToast('Producto consolidado validado correctamente');
     } catch (error) {
+        if (error?.code === 'LOCATIONS_PENDING' && !forzarUbicaciones) {
+            const pendientes = Array.isArray(error.body?.pendientes) ? error.body.pendientes.map(z => z.nombre).join(', ') : 'ubicaciones habituales';
+            const confirmar = window.confirm(`Todavía falta contar este producto en: ${pendientes}.\n\nLo recomendable es completar esas ubicaciones dentro de la misma ventana de conteo.\n\n¿Deseas validar de todos modos con el total físico actual?`);
+            if (confirmar) return guardarValidacionCaptura(id, { forzarUbicaciones: true });
+            return;
+        }
+        if (error?.code === 'COUNT_WINDOW_EXCEEDED' && !forzarUbicaciones) {
+            const minutos = Number(error.body?.minutos || 0);
+            const ventana = Number(error.body?.ventanaMinutos || 15);
+            const confirmar = window.confirm(`Los conteos de este producto se realizaron con ${minutos} minutos de separación y la ventana recomendada es de ${ventana} minutos.\n\nPara una comparación más confiable con SICAR conviene volver a contar sus ubicaciones de forma coordinada.\n\n¿Deseas validar de todos modos?`);
+            if (confirmar) return guardarValidacionCaptura(id, { forzarUbicaciones: true });
+            return;
+        }
         console.error(error);
         mostrarToast(`No se pudo validar: ${error.message}`, 'error');
     }
 }
 
-function crearNuevaZona(event) {
+async function crearNuevaZona(event) {
     event.preventDefault();
     const input = document.getElementById('input-nueva-zona');
     const nombre = String(input?.value || '').trim();
+    if (!nombre) return mostrarToast('Escribe el nombre de la nueva ubicación', 'error');
 
-    if (!nombre) {
-        mostrarToast('Escribe el nombre de la nueva zona', 'error');
-        return;
+    try {
+        const respuesta = await apiCrearZona(nombre);
+        const nueva = normalizarZona(respuesta?.data || { id: '', nombre });
+        if (nueva.id && !zonas.some(z => z.id === nueva.id)) zonas.push(nueva);
+        zonas.sort((a, b) => a.nombre.localeCompare(b.nombre));
+        if (input) input.value = '';
+        renderizarSelectorUbicacionEmpleado();
+        renderizarMapeoAdmin();
+        mostrarToast(`Ubicación creada: ${nombre}`);
+    } catch (error) {
+        mostrarToast(`No se pudo crear la ubicación: ${error.message}`, 'error');
     }
-
-    if (zonas.some(z => z.nombre.toLowerCase() === nombre.toLowerCase())) {
-        mostrarToast('Esa zona ya existe', 'error');
-        return;
-    }
-
-    zonas.push({ id: `z-${Date.now()}`, nombre });
-    guardarZonasLocales();
-    if (input) input.value = '';
-    renderizarMapeoAdmin();
-    mostrarToast(`Zona creada: ${nombre}`);
 }
 
 async function procesarCodigoMapeo(codigo) {
@@ -1816,24 +2010,31 @@ async function procesarCodigoMapeo(codigo) {
     const inputNombre = document.getElementById('input-nombre-zona');
     const alerta = document.getElementById('alerta-no-registrado');
     const btnAsignar = document.getElementById('btn-asignar-zona');
-
+    const info = document.getElementById('mapeo-ubicaciones-producto');
     if (!inputNombre) return;
 
     if (!codigoLimpio) {
         inputNombre.value = '--';
         alerta?.classList.add('hidden');
+        info?.classList.add('hidden');
         if (btnAsignar) btnAsignar.disabled = false;
         return;
     }
 
-    const prodEncontrado = productosDia.find(p => p.codigo === codigoLimpio);
-    if (prodEncontrado) {
-        inputNombre.value = prodEncontrado.nombre;
+    const prod = productosDia.find(p => p.codigo === codigoLimpio);
+    if (prod) {
+        inputNombre.value = prod.nombre;
         alerta?.classList.add('hidden');
         if (btnAsignar) btnAsignar.disabled = false;
+        if (info) {
+            const nombres = prod.ubicaciones.length ? prod.ubicaciones.map(z => z.nombre).join(' · ') : 'Sin ubicaciones habituales';
+            info.innerHTML = `<i class="fa-solid fa-location-dot me-1"></i>Actualmente: ${escaparHtml(nombres)}`;
+            info.classList.remove('hidden');
+        }
     } else {
         inputNombre.value = '⚠️ Producto no registrado';
         alerta?.classList.remove('hidden');
+        info?.classList.add('hidden');
         if (btnAsignar) btnAsignar.disabled = true;
     }
 }
@@ -1841,10 +2042,8 @@ async function procesarCodigoMapeo(codigo) {
 async function procesarEscaneoMapeo(codigo) {
     const input = document.getElementById('input-codigo-zona');
     if (input) input.value = codigo;
-
     let producto = productosDia.find(p => p.codigo === String(codigo).trim());
     if (!producto) producto = await buscarProducto(codigo);
-
     await procesarCodigoMapeo(codigo);
     mostrarToast(producto ? `Producto escaneado: ${producto.nombre}` : 'Producto no catalogado', producto ? 'success' : 'error');
 }
@@ -1853,49 +2052,53 @@ async function simularEscaneoMapeo(codigo) {
     await procesarEscaneoMapeo(codigo);
 }
 
+function filtrarMapeoAdmin() {
+    filtroMapeoAdmin = String(document.getElementById('input-buscar-mapeo')?.value || '').trim().toLowerCase();
+    renderizarMapeoAdmin();
+}
+
 function renderizarMapeoAdmin() {
     const sel = document.getElementById('select-zona-activa');
     const cont = document.getElementById('contenedor-zonas-admin');
     if (!sel || !cont) return;
 
     const seleccionAnterior = sel.value;
-    sel.innerHTML = '';
-    cont.innerHTML = '';
+    sel.innerHTML = zonas.length
+        ? zonas.map(z => `<option value="${escaparHtml(z.id)}">${escaparHtml(z.nombre)}</option>`).join('')
+        : '<option value="">Crea una ubicación primero</option>';
+    if (zonas.some(z => z.id === seleccionAnterior)) sel.value = seleccionAnterior;
+
+    const mapeados = productosDia.filter(p => p.ubicaciones.length > 0).length;
+    const sinZona = productosDia.length - mapeados;
+    const eZ = document.getElementById('mapeo-total-zonas');
+    const eM = document.getElementById('mapeo-total-mapeados');
+    const eS = document.getElementById('mapeo-sin-zona');
+    if (eZ) eZ.textContent = zonas.length;
+    if (eM) eM.textContent = mapeados;
+    if (eS) eS.textContent = sinZona;
 
     if (!zonas.length) {
-        sel.innerHTML = '<option value="">Crea una zona primero</option>';
-        cont.innerHTML = '<div class="text-xs text-gray-400 italic">No hay zonas configuradas.</div>';
+        cont.innerHTML = '<div class="col-span-full text-xs text-gray-400 italic border rounded-lg p-6 text-center">No hay ubicaciones configuradas. Crea la primera para comenzar el mapeo.</div>';
         return;
     }
 
-    zonas.forEach(z => {
-        const opt = document.createElement('option');
-        opt.value = z.id;
-        opt.innerText = z.nombre;
-        sel.appendChild(opt);
-
-        const productosZona = productosDia.filter(p => p.zona === z.nombre);
-        const card = document.createElement('div');
-        card.className = 'border rounded-lg p-3 bg-gray-50 space-y-2';
-
+    const filtro = filtroMapeoAdmin;
+    cont.innerHTML = zonas.map(z => {
+        let productosZona = productosDia.filter(p => p.ubicaciones.some(u => u.id === z.id));
+        if (filtro) productosZona = productosZona.filter(p => `${p.nombre} ${p.codigo}`.toLowerCase().includes(filtro));
         const prodsHTML = productosZona.map(p => `
-            <div class="text-xs bg-white p-1.5 border rounded flex justify-between gap-2">
-                <span class="font-bold truncate">${escaparHtml(p.nombre)}</span>
-                <span class="font-mono text-gray-400 whitespace-nowrap">${escaparHtml(p.codigo)}</span>
+            <div class="text-xs bg-white p-2 border rounded flex justify-between items-center gap-2">
+                <div class="min-w-0"><div class="font-bold truncate">${escaparHtml(p.nombre)}</div><div class="font-mono text-gray-400 text-[10px]">${escaparHtml(p.codigo)}</div></div>
+                <button type="button" onclick="quitarProductoDeZona('${z.id}','${p.id}')" class="text-red-500 hover:bg-red-50 border border-red-100 rounded px-2 py-1 text-[10px] font-bold whitespace-nowrap" title="Quitar solamente de esta ubicación"><i class="fa-solid fa-link-slash me-1"></i>Quitar</button>
+            </div>`).join('');
+        return `<div class="border rounded-xl p-3 bg-gray-50 space-y-2">
+            <div class="flex justify-between items-start gap-2 border-b pb-2">
+                <div><div class="font-bold text-xs text-slate-800"><i class="fa-solid fa-location-dot me-1 text-amber-500"></i>${escaparHtml(z.nombre)}</div><div class="text-[10px] text-gray-400 mt-0.5">${productosZona.length}${filtro ? ' visibles' : ''} producto(s)</div></div>
+                <div class="flex gap-1"><button type="button" onclick="renombrarZona('${z.id}')" class="w-7 h-7 border rounded bg-white text-slate-500 hover:text-amber-600" title="Renombrar"><i class="fa-solid fa-pen"></i></button><button type="button" onclick="eliminarZona('${z.id}')" class="w-7 h-7 border rounded bg-white text-red-500 hover:bg-red-50" title="Eliminar ubicación"><i class="fa-solid fa-trash"></i></button></div>
             </div>
-        `).join('');
-
-        card.innerHTML = `
-            <div class="flex justify-between items-center border-b pb-1 font-bold text-xs text-slate-800">
-                <span><i class="fa-solid fa-location-dot me-1 text-amber-500"></i> ${escaparHtml(z.nombre)}</span>
-                <span class="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded text-[10px]">${productosZona.length} items</span>
-            </div>
-            <div class="space-y-1 max-h-40 overflow-y-auto">${prodsHTML || '<span class="text-xs text-gray-400 italic">Sin productos asignados</span>'}</div>
-        `;
-        cont.appendChild(card);
-    });
-
-    if ([...sel.options].some(o => o.value === seleccionAnterior)) sel.value = seleccionAnterior;
+            <div class="space-y-1 max-h-52 overflow-y-auto">${prodsHTML || `<span class="block text-xs text-gray-400 italic py-2">${filtro ? 'Sin coincidencias en esta ubicación' : 'Sin productos asignados'}</span>`}</div>
+        </div>`;
+    }).join('');
 }
 
 async function asignarProductoAZona(event) {
@@ -1903,32 +2106,91 @@ async function asignarProductoAZona(event) {
     const codigo = String(document.getElementById('input-codigo-zona')?.value || '').trim();
     const zonaId = document.getElementById('select-zona-activa')?.value;
     const zona = zonas.find(z => z.id === zonaId);
+    if (!codigo || !zona) return mostrarToast('Selecciona una ubicación y escanea un producto', 'error');
 
-    if (!codigo || !zona) {
-        mostrarToast('Selecciona una zona y escanea un producto', 'error');
-        return;
-    }
-
-    let producto = productosDia.find(p => p.codigo === codigo);
-    if (!producto) producto = await buscarProducto(codigo);
-
+    const producto = productosDia.find(p => p.codigo === codigo) || await buscarProducto(codigo);
     if (!producto) {
-        procesarCodigoMapeo(codigo);
-        mostrarToast('El producto todavía no está registrado', 'error');
-        return;
+        await procesarCodigoMapeo(codigo);
+        return mostrarToast('El producto todavía no está registrado', 'error');
     }
+    if (producto.ubicaciones.some(z => z.id === zona.id)) return mostrarToast(`${producto.nombre} ya está asignado a ${zona.nombre}`, 'error');
 
     try {
-        const actualizado = await apiActualizarProducto(codigo, { seccion: zona.nombre });
-        Object.assign(producto, normalizarProducto(actualizado), { contado: producto.contado });
+        await apiAsignarProductoZona(zona.id, codigo);
+        producto.ubicaciones.push({ id: zona.id, nombre: zona.nombre });
+        zona.totalProductos = Number(zona.totalProductos || 0) + 1;
+        sincronizarProductosContados();
         renderizarMapeoAdmin();
         renderizarListaEmpleado();
+        renderizarTareasCoordinadas();
         document.getElementById('input-codigo-zona').value = '';
         document.getElementById('input-nombre-zona').value = '--';
-        mostrarToast(`${producto.nombre} asignado a ${zona.nombre}`);
+        document.getElementById('mapeo-ubicaciones-producto')?.classList.add('hidden');
+        mostrarToast(`${producto.nombre} también quedó asignado a ${zona.nombre}`);
     } catch (error) {
-        console.error(error);
-        mostrarToast(`No se pudo asignar la zona: ${error.message}`, 'error');
+        mostrarToast(`No se pudo asignar la ubicación: ${error.message}`, 'error');
+    }
+}
+
+async function quitarProductoDeZona(zonaId, productoId) {
+    const zona = zonas.find(z => z.id === zonaId);
+    const producto = productosDia.find(p => p.id === productoId);
+    if (!zona || !producto) return;
+    if (!window.confirm(`¿Quitar ${producto.nombre} de ${zona.nombre}?\n\nEl producto NO se eliminará del catálogo y sus conteos históricos no se modificarán.`)) return;
+    try {
+        await apiQuitarProductoZona(zonaId, productoId);
+        producto.ubicaciones = producto.ubicaciones.filter(u => u.id !== zonaId);
+        zona.totalProductos = Math.max(0, Number(zona.totalProductos || 0) - 1);
+        sincronizarProductosContados();
+        renderizarMapeoAdmin();
+        renderizarListaEmpleado();
+        renderizarTareasCoordinadas();
+        mostrarToast('Asignación eliminada correctamente');
+    } catch (error) {
+        mostrarToast(`No se pudo quitar el producto: ${error.message}`, 'error');
+    }
+}
+
+async function renombrarZona(zonaId) {
+    const zona = zonas.find(z => z.id === zonaId);
+    if (!zona) return;
+    const nombre = window.prompt('Nuevo nombre de la ubicación:', zona.nombre);
+    if (nombre === null || !String(nombre).trim() || String(nombre).trim() === zona.nombre) return;
+    try {
+        const nuevoNombre = String(nombre).trim();
+        await apiRenombrarZona(zonaId, nuevoNombre);
+        zona.nombre = nuevoNombre;
+        productosDia.forEach(p => p.ubicaciones.forEach(u => { if (u.id === zonaId) u.nombre = nuevoNombre; }));
+        renderizarSelectorUbicacionEmpleado();
+        renderizarMapeoAdmin();
+        renderizarListaEmpleado();
+        renderizarTareasCoordinadas();
+        mostrarToast('Ubicación renombrada correctamente');
+    } catch (error) {
+        mostrarToast(`No se pudo renombrar: ${error.message}`, 'error');
+    }
+}
+
+async function eliminarZona(zonaId) {
+    const zona = zonas.find(z => z.id === zonaId);
+    if (!zona) return;
+    const productos = productosDia.filter(p => p.ubicaciones.some(u => u.id === zonaId)).length;
+    const texto = productos
+        ? `La ubicación ${zona.nombre} tiene ${productos} producto(s) asignado(s).\n\nAl eliminarla se quitará esa asignación, pero NO se borrarán productos ni conteos históricos. ¿Continuar?`
+        : `¿Eliminar la ubicación ${zona.nombre}?`;
+    if (!window.confirm(texto)) return;
+    try {
+        await apiEliminarZona(zonaId);
+        zonas = zonas.filter(z => z.id !== zonaId);
+        productosDia.forEach(p => { p.ubicaciones = p.ubicaciones.filter(u => u.id !== zonaId); });
+        sincronizarProductosContados();
+        renderizarSelectorUbicacionEmpleado();
+        renderizarMapeoAdmin();
+        renderizarListaEmpleado();
+        renderizarTareasCoordinadas();
+        mostrarToast('Ubicación eliminada correctamente');
+    } catch (error) {
+        mostrarToast(`No se pudo eliminar: ${error.message}`, 'error');
     }
 }
 
@@ -1973,11 +2235,13 @@ async function guardarNuevoProducto(event) {
             precio,
             stock: 0,
             categoria,
-            seccion: zona?.nombre || null
+            seccion: null
         });
 
+        if (zona?.id) await apiAsignarProductoZona(zona.id, codigo);
         const nuevo = normalizarProducto(creado);
         productosDia.push(nuevo);
+        await cargarProductosDesdeBD();
         cerrarModalAlta();
         document.getElementById('input-codigo-zona').value = codigo;
         await procesarCodigoMapeo(codigo);
@@ -2032,7 +2296,7 @@ function escaparHtml(valor) {
         .replaceAll("'", '&#039;');
 }
 
-function mostrarToast(msg, tipo = 'success') {
+function mostrarToast(msg, tipo = 'success', duracion = 2800) {
     const toast = document.getElementById('toast');
     const texto = document.getElementById('toast-msg');
     const icono = toast?.querySelector('i');
@@ -2042,12 +2306,14 @@ function mostrarToast(msg, tipo = 'success') {
     if (icono) {
         icono.className = tipo === 'error'
             ? 'fa-solid fa-circle-exclamation text-red-400 text-lg'
-            : 'fa-solid fa-circle-check text-emerald-400 text-lg';
+            : tipo === 'warning'
+                ? 'fa-solid fa-triangle-exclamation text-amber-400 text-lg'
+                : 'fa-solid fa-circle-check text-emerald-400 text-lg';
     }
 
     toast.classList.remove('hidden');
     clearTimeout(mostrarToast._timer);
-    mostrarToast._timer = setTimeout(() => toast.classList.add('hidden'), 2800);
+    mostrarToast._timer = setTimeout(() => toast.classList.add('hidden'), duracion);
 }
 
 
@@ -2067,7 +2333,10 @@ function programarSincronizacionTiempoReal({ capturas: recargarCapturas = false,
 
         try {
             if (pendiente.sesion) await cargarSesionInventarioActiva();
-            if (pendiente.productos) await cargarProductosDesdeBD();
+            if (pendiente.productos) {
+                await cargarZonasDesdeBD({ silencioso: true });
+                await cargarProductosDesdeBD();
+            }
             if (pendiente.capturas) await cargarCapturasDesdeBD({ silencioso: true });
         } catch (error) {
             console.warn('No se pudo sincronizar el inventario en tiempo real:', error);

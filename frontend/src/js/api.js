@@ -125,6 +125,42 @@ function apiActualizarProducto(codigo, datos) {
     });
 }
 
+// ---------------- UBICACIONES / ZONAS ----------------
+function apiObtenerZonas() {
+    return apiRequest('/zonas');
+}
+
+function apiCrearZona(nombre) {
+    return apiRequest('/zonas', {
+        method: 'POST',
+        body: JSON.stringify({ nombre })
+    });
+}
+
+function apiRenombrarZona(id, nombre) {
+    return apiRequest(`/zonas/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ nombre })
+    });
+}
+
+function apiEliminarZona(id) {
+    return apiRequest(`/zonas/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+function apiAsignarProductoZona(zonaId, codigo) {
+    return apiRequest(`/zonas/${encodeURIComponent(zonaId)}/productos`, {
+        method: 'POST',
+        body: JSON.stringify({ codigo })
+    });
+}
+
+function apiQuitarProductoZona(zonaId, productoId) {
+    return apiRequest(`/zonas/${encodeURIComponent(zonaId)}/productos/${encodeURIComponent(productoId)}`, {
+        method: 'DELETE'
+    });
+}
+
 // ---------------- CAPTURAS ----------------
 function apiObtenerCapturas() {
     return apiRequest('/capturas');
@@ -150,6 +186,10 @@ function apiActualizarCaptura(id, datos) {
         method: 'PUT',
         body: JSON.stringify(datos)
     });
+}
+
+function apiEliminarConteoUbicacion(id) {
+    return apiRequest(`/capturas/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 

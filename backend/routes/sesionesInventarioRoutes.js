@@ -9,6 +9,7 @@ const {
 const {
   obtenerSesionInventarioActiva,
   obtenerResumenSesion,
+  obtenerCapturasConsolidadasSesion,
   construirResumenPorDia,
   iniciarNuevaSesionInventario,
   finalizarSesionInventarioActiva
@@ -17,27 +18,7 @@ const { emitirEventoInventario } = require('../services/inventarioEvents');
 
 router.use(autenticarUsuario, requerirPasswordActualizado);
 
-const includeCapturaHistoricaAdmin = {
-  producto: {
-    select: {
-      id: true,
-      codigo: true,
-      nombre: true,
-      precio: true,
-      seccion: true,
-      categoria: true
-    }
-  },
-  usuario: {
-    select: {
-      id: true,
-      nombre: true,
-      username: true,
-      email: true,
-      rol: true
-    }
-  }
-};
+
 
 // SESIÓN ACTIVA
 // Puede devolver data: null después de finalizar un inventario y antes de iniciar el siguiente.
@@ -145,11 +126,7 @@ router.get('/:id', requerirRol('ADMIN'), async (req, res) => {
       return res.status(404).json({ success: false, message: 'Inventario no encontrado' });
     }
 
-    const capturas = await prisma.captura.findMany({
-      where: { sesionId: sesion.id },
-      include: includeCapturaHistoricaAdmin,
-      orderBy: { createdAt: 'asc' }
-    });
+    const capturas = await obtenerCapturasConsolidadasSesion(sesion.id);
 
     const resumen = await obtenerResumenSesion(sesion.id);
     const dias = construirResumenPorDia(capturas);

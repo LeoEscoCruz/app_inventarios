@@ -71,6 +71,28 @@ model Producto {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   capturas  Captura[]
+  zonas     ProductoZona[]
+}
+
+model Zona {
+  id        String         @id @default(uuid())
+  nombre    String         @unique
+  activo    Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  productos ProductoZona[]
+  capturas  Captura[]
+}
+
+model ProductoZona {
+  productoId String
+  zonaId     String
+  producto   Producto @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  zona       Zona     @relation(fields: [zonaId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@id([productoId, zonaId])
+  @@index([zonaId])
 }
 
 model SesionInventario {
@@ -96,8 +118,17 @@ model Captura {
   stockSicar       Int?             // Cifra vigente del POS ingresada manualmente por el Admin
   diferencia       Int?             // cantidadFisica - stockSicar
   estado           EstadoCaptura    @default(PENDIENTE)
-  seccionCapturada String?          // Zona específica donde se contó
+  seccionCapturada String?          // Snapshot del nombre de la ubicación al momento del conteo
+  zonaId           String?
+  zona             Zona?            @relation(fields: [zonaId], references: [id], onDelete: SetNull)
 
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
+
+  // Para los conteos nuevos evita que dos personas registren el mismo producto
+  // dos veces en la misma ubicación dentro de una sesión. Los registros históricos
+  // con zonaId NULL siguen siendo compatibles con PostgreSQL.
+  @@unique([sesionId, productoId, zonaId])
+  @@index([sesionId, productoId])
+  @@index([zonaId])
 }

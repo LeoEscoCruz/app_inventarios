@@ -1,4 +1,5 @@
 const prisma = require('../config/db');
+const { agruparCapturasPorProducto } = require('./capturasAggregationService');
 
 function formatearFechaSesion(fecha = new Date()) {
   return new Intl.DateTimeFormat('es-MX', {
@@ -56,7 +57,6 @@ function construirResumenCapturas(capturas = []) {
     if (completada && Number.isInteger(captura.diferencia)) {
       const diferencia = captura.diferencia;
       resumen.balanceUnidades += diferencia;
-
       if (diferencia === 0) resumen.sinDiferencia += 1;
       if (diferencia < 0) {
         resumen.conDiferencia += 1;
@@ -70,8 +70,11 @@ function construirResumenCapturas(capturas = []) {
       }
     }
 
-    const usuario = captura.usuario;
-    if (usuario?.id) {
+    const lista = Array.isArray(captura.participantesConteo) && captura.participantesConteo.length
+      ? captura.participantesConteo
+      : captura.usuario?.id ? [{ ...captura.usuario, conteos: 1 }] : [];
+
+    for (const usuario of lista) {
       if (!participantes.has(usuario.id)) {
         participantes.set(usuario.id, {
           id: usuario.id,
@@ -81,29 +84,33 @@ function construirResumenCapturas(capturas = []) {
           conteos: 0
         });
       }
-      participantes.get(usuario.id).conteos += 1;
+      participantes.get(usuario.id).conteos += Number(usuario.conteos || 1);
     }
   }
 
   resumen.participantes = [...participantes.values()]
     .sort((a, b) => b.conteos - a.conteos || a.nombre.localeCompare(b.nombre, 'es'));
-
   return resumen;
 }
 
-async function obtenerResumenSesion(sesionId) {
-  const capturas = await prisma.captura.findMany({
+async function obtenerCapturasConsolidadasSesion(sesionId) {
+  const lineas = await prisma.captura.findMany({
     where: { sesionId },
-    select: {
-      estado: true,
-      diferencia: true,
-      usuario: {
-        select: { id: true, nombre: true, username: true, rol: true }
-      }
-    }
+    include: {
+      producto: {
+        include: { zonas: { include: { zona: { select: { id: true, nombre: true, activo: true } } } } }
+      },
+      usuario: { select: { id: true, nombre: true, username: true, rol: true } },
+      zona: { select: { id: true, nombre: true } }
+    },
+    orderBy: { createdAt: 'asc' }
   });
+  return agruparCapturasPorProducto(lineas);
+}
 
-  return construirResumenCapturas(capturas);
+async function obtenerResumenSesion(sesionId) {
+  const consolidadas = await obtenerCapturasConsolidadasSesion(sesionId);
+  return construirResumenCapturas(consolidadas);
 }
 
 async function iniciarNuevaSesionInventario(nombreSolicitado = '') {
@@ -137,10 +144,9 @@ async function finalizarSesionInventarioActiva({ forzar = false } = {}) {
     throw error;
   }
 
-  const [totalCapturas, pendientes] = await Promise.all([
-    prisma.captura.count({ where: { sesionId: sesion.id } }),
-    prisma.captura.count({ where: { sesionId: sesion.id, estado: 'PENDIENTE' } })
-  ]);
+  const resumenActual = await obtenerResumenSesion(sesion.id);
+  const totalCapturas = resumenActual.totalCapturas;
+  const pendientes = resumenActual.pendientes;
 
   if (totalCapturas === 0 && !forzar) {
     const error = new Error('El inventario no tiene conteos registrados');
@@ -217,6 +223,7 @@ function construirResumenPorDia(capturas = []) {
 module.exports = {
   obtenerSesionInventarioActiva,
   obtenerResumenSesion,
+  obtenerCapturasConsolidadasSesion,
   construirResumenCapturas,
   construirResumenPorDia,
   iniciarNuevaSesionInventario,

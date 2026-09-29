@@ -112,19 +112,13 @@
                     </div>
                 </div>
 
-                <div>
-                    <label class="block text-xs font-bold text-gray-400 uppercase mb-1">Prueba Rápida sin Cámara:</label>
-                    <div class="grid grid-cols-2 gap-2">
-                        <button onclick="simularEscaneo('7501055377206', 'Lechita Vainilla 180ml')" class="text-xs bg-gray-100 hover:bg-amber-100 p-2 rounded text-left truncate border">
-                            7501055377206 (Refri 1)
-                        </button>
-                        <button onclick="simularEscaneo('7501055305339', 'CC Light 600ml 12PK')" class="text-xs bg-gray-100 hover:bg-amber-100 p-2 rounded text-left truncate border">
-                            7501055305339 (Pasillo 1)
-                        </button>
-                    </div>
-                </div>
-
                 <form id="form-conteo-emp" onsubmit="registrarConteo(event)" class="space-y-3 border-t pt-3">
+                    <div class="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                        <label class="block text-xs font-bold text-amber-900 mb-1"><i class="fa-solid fa-location-dot me-1"></i>¿Qué ubicación estás contando?</label>
+                        <select id="select-zona-conteo" onchange="cambiarUbicacionConteo()" class="w-full border border-amber-300 rounded p-2 text-sm font-bold bg-white outline-none focus:ring-2 focus:ring-amber-500"></select>
+                        <div class="text-[10px] text-amber-800 mt-1">Todos los productos registrados se asociarán a esta ubicación hasta que la cambies.</div>
+                    </div>
+                    <div id="tareas-coordinadas" class="hidden border border-indigo-200 bg-indigo-50 rounded-lg p-3"></div>
                     <div>
                         <label class="block text-xs font-semibold text-gray-600">Código de Barras</label>
                         <input type="text" id="codigo-input" required autocomplete="off" inputmode="numeric" oninput="procesarCodigoEmpleadoEnTiempoReal(this.value)" placeholder="Escanea o escribe el código..." class="w-full p-2 border rounded bg-gray-50 font-mono text-sm">
@@ -142,8 +136,10 @@
                         </div>
                     </div>
 
+                    <div id="coordinacion-producto" class="hidden bg-slate-50 border rounded-lg p-2.5"></div>
+
                     <div>
-                        <label class="block text-xs font-semibold text-gray-600">Cantidad Consecutiva (Acepta 0)</label>
+                        <label class="block text-xs font-semibold text-gray-600">Cantidad en esta ubicación (Acepta 0)</label>
                         <input type="number" id="cantidad-input" min="0" required placeholder="Ingresa cantidad + Enter" class="w-full p-2 border rounded text-lg font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 outline-none">
                     </div>
                     <button id="btn-registrar-conteo" type="submit" class="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 rounded-lg shadow flex items-center justify-center gap-2">
@@ -175,7 +171,7 @@
                     <i class="fa-solid fa-clock-rotate-left me-1"></i> Historial
                 </button>
                 <button onclick="cambiarTabAdmin('mapeo')" id="tab-btn-mapeo" class="px-4 py-2 border-b-2 border-transparent font-medium text-gray-500 hover:text-gray-700 text-sm whitespace-nowrap">
-                    <i class="fa-solid fa-layer-group me-1"></i> Mapear Zonas y Pasillos
+                    <i class="fa-solid fa-layer-group me-1"></i> Ubicaciones y Mapeo
                 </button>
                 <button onclick="cambiarTabAdmin('usuarios')" id="tab-btn-usuarios" class="px-4 py-2 border-b-2 border-transparent font-medium text-gray-500 hover:text-gray-700 text-sm whitespace-nowrap">
                     <i class="fa-solid fa-users-gear me-1"></i> Usuarios
@@ -290,72 +286,55 @@
                 </section>
             </div>
 
-            <!-- MAPEO DE ZONAS -->
-            <div id="tab-mapeo" class="hidden bg-white p-6 rounded-xl border shadow-sm space-y-6">
-                <div class="border-b pb-4 space-y-2">
-                    <h3 class="font-bold text-slate-900 text-sm"><i class="fa-solid fa-plus-circle text-amber-500 me-1"></i> 1. Crear Nueva Agrupación / Pasillo</h3>
-                    <form onsubmit="crearNuevaZona(event)" class="flex gap-2 max-w-md">
-                        <input type="text" id="input-nueva-zona" placeholder="Ej. Pasillo 2, Refri 1..." class="border p-2 rounded text-sm w-full outline-none focus:ring-2 focus:ring-amber-500">
-                        <button type="submit" class="bg-slate-900 text-white font-bold px-4 py-2 rounded text-sm hover:bg-slate-800 whitespace-nowrap">
-                            + Crear Zona
-                        </button>
+            <!-- UBICACIONES Y MAPEO MULTIUBICACIÓN -->
+            <div id="tab-mapeo" class="hidden space-y-4">
+                <div class="bg-white p-5 rounded-xl border shadow-sm">
+                    <div class="flex flex-wrap justify-between gap-3 items-start">
+                        <div>
+                            <h2 class="font-bold text-slate-900"><i class="fa-solid fa-map-location-dot text-amber-500 me-1"></i> Ubicaciones físicas y mapeo</h2>
+                            <p class="text-xs text-gray-500 mt-1 max-w-2xl">Un producto puede pertenecer a varias ubicaciones. Durante el inventario cada combinación producto + ubicación se cuenta por separado y la Recepción en Vivo suma automáticamente el total físico.</p>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-2 mt-4">
+                        <div class="bg-slate-50 border rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-gray-400">Ubicaciones</div><div id="mapeo-total-zonas" class="text-xl font-bold">0</div></div>
+                        <div class="bg-emerald-50 border border-emerald-100 rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-emerald-600">Productos mapeados</div><div id="mapeo-total-mapeados" class="text-xl font-bold text-emerald-700">0</div></div>
+                        <div class="bg-amber-50 border border-amber-100 rounded-lg p-3"><div class="text-[9px] uppercase font-bold text-amber-600">Sin ubicación</div><div id="mapeo-sin-zona" class="text-xl font-bold text-amber-700">0</div></div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-5 rounded-xl border shadow-sm space-y-3">
+                    <h3 class="font-bold text-slate-900 text-sm"><i class="fa-solid fa-plus-circle text-amber-500 me-1"></i> Crear ubicación</h3>
+                    <form onsubmit="crearNuevaZona(event)" class="flex gap-2 max-w-xl">
+                        <input type="text" id="input-nueva-zona" placeholder="Ej. Refri 1, Zona de cajas, Almacén..." class="border p-2 rounded text-sm w-full outline-none focus:ring-2 focus:ring-amber-500">
+                        <button type="submit" class="bg-slate-900 text-white font-bold px-4 py-2 rounded text-sm hover:bg-slate-800 whitespace-nowrap"><i class="fa-solid fa-plus me-1"></i>Crear</button>
                     </form>
                 </div>
 
-                <div class="space-y-3">
-                    <h3 class="font-bold text-slate-900 text-sm"><i class="fa-solid fa-barcode text-amber-500 me-1"></i> 2. Asignar Productos por Escaneo a Zona Activa</h3>
-                    
+                <div class="bg-white p-5 rounded-xl border shadow-sm space-y-3">
+                    <h3 class="font-bold text-slate-900 text-sm"><i class="fa-solid fa-barcode text-amber-500 me-1"></i> Asignar producto a otra ubicación</h3>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <!-- CÁMARA ADMIN -->
                         <div class="bg-slate-900 p-3 rounded-xl border border-slate-700 flex flex-col space-y-2">
-                            <span class="text-xs font-bold text-amber-400 flex items-center justify-between">
-                                <span><i class="fa-solid fa-camera me-1"></i> Cámara Escáner Admin</span>
-                                <button onclick="iniciarCamaraAdmin()" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-amber-400 px-2 py-0.5 rounded border border-slate-600">Encender</button>
-                            </span>
+                            <span class="text-xs font-bold text-amber-400 flex items-center justify-between"><span><i class="fa-solid fa-camera me-1"></i> Cámara Escáner Admin</span><button onclick="iniciarCamaraAdmin()" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-amber-400 px-2 py-0.5 rounded border border-slate-600">Encender</button></span>
                             <div id="reader-admin" class="w-full bg-slate-950 rounded-lg overflow-hidden min-h-[160px]"></div>
                         </div>
-
-                        <!-- PANEL MAPEO Y DETECCIÓN -->
-                        <div class="bg-amber-50 p-4 rounded-xl border border-amber-200 flex flex-col justify-between space-y-3">
-                            <div>
-                                <label class="block text-xs font-bold text-slate-700 mb-1">Zona Selección Actual:</label>
-                                <select id="select-zona-activa" class="w-full border rounded p-2 text-xs font-bold bg-white outline-none text-slate-900"></select>
-                            </div>
-
+                        <div class="bg-amber-50 p-4 rounded-xl border border-amber-200 space-y-3">
+                            <div><label class="block text-xs font-bold text-slate-700 mb-1">Ubicación destino</label><select id="select-zona-activa" class="w-full border rounded p-2 text-xs font-bold bg-white outline-none text-slate-900"></select></div>
                             <form onsubmit="asignarProductoAZona(event)" class="space-y-2">
-                                <div>
-                                    <label class="block text-xs font-semibold text-gray-600">Código de Barras Escaneado:</label>
-                                    <input type="text" id="input-codigo-zona" oninput="procesarCodigoMapeo(this.value)" placeholder="Apunta la cámara o escribe..." class="border p-2 rounded text-xs w-full font-mono focus:ring-2 focus:ring-amber-500 outline-none bg-white">
-                                </div>
-
-                                <div>
-                                    <label class="block text-xs font-semibold text-gray-600">Nombre del Producto:</label>
-                                    <input type="text" id="input-nombre-zona" readonly placeholder="--" class="border p-2 rounded text-xs w-full font-bold bg-gray-100 text-slate-800">
-                                </div>
-
-                                <div id="alerta-no-registrado" class="hidden bg-amber-100 border border-amber-300 p-2 rounded-lg flex items-center justify-between">
-                                    <span class="text-[11px] text-amber-900 font-medium"><i class="fa-solid fa-triangle-exclamation text-amber-600 me-1"></i> Producto no catalogado</span>
-                                    <button type="button" onclick="abrirModalAlta()" class="bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] px-2 py-1 rounded shadow">
-                                        + Registrar Producto
-                                    </button>
-                                </div>
-
-                                <button type="submit" id="btn-asignar-zona" class="w-full bg-amber-500 font-bold text-slate-900 px-4 py-2 rounded text-xs hover:bg-amber-400 shadow">
-                                    <i class="fa-solid fa-link me-1"></i> Asignar a Zona
-                                </button>
+                                <div><label class="block text-xs font-semibold text-gray-600">Código de barras</label><input type="text" id="input-codigo-zona" oninput="procesarCodigoMapeo(this.value)" placeholder="Escanea o escribe..." class="border p-2 rounded text-xs w-full font-mono focus:ring-2 focus:ring-amber-500 outline-none bg-white"></div>
+                                <div><label class="block text-xs font-semibold text-gray-600">Producto</label><input type="text" id="input-nombre-zona" readonly placeholder="--" class="border p-2 rounded text-xs w-full font-bold bg-gray-100 text-slate-800"></div>
+                                <div id="mapeo-ubicaciones-producto" class="hidden text-[10px] text-slate-600 bg-white border rounded p-2"></div>
+                                <div id="alerta-no-registrado" class="hidden bg-amber-100 border border-amber-300 p-2 rounded-lg flex items-center justify-between"><span class="text-[11px] text-amber-900 font-medium"><i class="fa-solid fa-triangle-exclamation text-amber-600 me-1"></i> Producto no catalogado</span><button type="button" onclick="abrirModalAlta()" class="bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] px-2 py-1 rounded shadow">+ Registrar Producto</button></div>
+                                <button type="submit" id="btn-asignar-zona" class="w-full bg-amber-500 font-bold text-slate-900 px-4 py-2 rounded text-xs hover:bg-amber-400 shadow"><i class="fa-solid fa-link me-1"></i> Agregar esta ubicación</button>
                             </form>
-
-                            <div class="flex gap-2 border-t border-amber-200 pt-2">
-                                <span class="text-[10px] text-gray-500 font-bold self-center">Prueba Rápida:</span>
-                                <button onclick="simularEscaneoMapeo('7501055377206')" class="text-[10px] bg-white hover:bg-amber-100 p-1 rounded border font-mono">7501055377206</button>
-                                <button onclick="simularEscaneoMapeo('9999999999999')" class="text-[10px] bg-red-50 text-red-700 hover:bg-red-100 p-1 rounded border font-mono">999 (No Existe)</button>
-                            </div>
                         </div>
                     </div>
                 </div>
 
-                <div class="space-y-3 border-t pt-4">
-                    <h3 class="font-bold text-slate-900 text-sm">Estructura Físicamente Configurada</h3>
+                <div class="bg-white p-5 rounded-xl border shadow-sm space-y-3">
+                    <div class="flex flex-wrap justify-between items-end gap-3">
+                        <div><h3 class="font-bold text-slate-900 text-sm"><i class="fa-solid fa-sitemap text-amber-500 me-1"></i> Estructura física configurada</h3><p class="text-[10px] text-gray-500 mt-1">Puedes quitar productos de una ubicación, renombrarla o eliminarla sin borrar el producto del catálogo ni sus conteos históricos.</p></div>
+                        <div class="w-full sm:w-72"><label class="block text-[10px] font-bold text-gray-500 mb-1">Buscar producto en el mapeo</label><input id="input-buscar-mapeo" type="search" oninput="filtrarMapeoAdmin()" placeholder="Nombre o código..." class="w-full border rounded-lg p-2 text-xs outline-none focus:ring-2 focus:ring-amber-500"></div>
+                    </div>
                     <div id="contenedor-zonas-admin" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
                 </div>
             </div>
